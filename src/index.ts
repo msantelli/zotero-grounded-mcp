@@ -10,6 +10,7 @@
  *   - zotero_bibliography  Generate a formatted bibliography from item keys
  *   - zotero_get_notes     Get notes and annotations attached to an item
  *   - zotero_get_attachments  Get PDF and file attachments for an item
+ *   - zotero_word_field_code  Generate Zotero Word field code XML for live citations
  *
  * Configuration is via environment variables:
  *   ZOTERO_MODE          "local" (default) or "web"
@@ -30,6 +31,12 @@ import {
   formatBibliography,
 } from "./formatter.js";
 import { htmlToMarkdown } from "./html-utils.js";
+import {
+  buildFieldCodeXml,
+  buildBibliographyFieldXml,
+  buildZoteroPrefsXml,
+  type FieldCodeOptions,
+} from "./word-fields.js";
 
 // --- Config from env ---
 const mode = (process.env.ZOTERO_MODE ?? "local") as "local" | "web";
@@ -391,6 +398,103 @@ server.tool(
     } catch (error) {
       return {
         content: [{ type: "text", text: `Error fetching attachments: ${error}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ──────────────────────────────────────────
+// Tool: zotero_word_field_code
+// ──────────────────────────────────────────
+server.tool(
+  "zotero_word_field_code",
+  `Generate Zotero-compatible Word field code XML for citations. When injected into a .docx file, the Zotero Word plugin recognizes these as live citations that can be Refreshed, reformatted, and included in auto-generated bibliographies. Returns XML snippets plus docProps/custom.xml content. This tool is read-only — it returns XML text, it does not modify any files.`,
+  {
+    keys: z
+      .array(z.string())
+      .min(1)
+      .describe("Array of Zotero item keys to generate field codes for"),
+    grouped: z
+      .boolean()
+      .optional()
+      .describe("If true, generate a single multi-source citation (e.g. '(Author1, 2020; Author2, 2021)')"),
+    locators: z
+      .array(
+        z.object({
+          key: z.string().describe("Item key"),
+          locator: z.string().optional().describe("Page number or locator (e.g. '108', '§3.2')"),
+          prefix: z.string().optional().describe("Text before citation (e.g. 'see ')"),
+          suffix: z.string().optional().describe("Text after citation (e.g. ', emphasis added')"),
+          suppressAuthor: z.boolean().optional().describe("Suppress author name for narrative citations"),
+        })
+      )
+      .optional()
+      .describe("Per-item citation options"),
+    style: z
+      .string()
+      .optional()
+      .describe("CSL style URL for docProps preferences (default: APA). E.g. 'http://www.zotero.org/styles/chicago-author-date'"),
+    bibliography: z
+      .boolean()
+      .optional()
+      .describe("If true, also include a bibliography (ZOTERO_BIBL) field code"),
+  },
+  async ({ keys, grouped, locators, style, bibliography }) => {
+    try {
+      const items = await client.getItems(keys);
+      const userId = await client.getUserId();
+
+      const options: FieldCodeOptions = { userId, styleUrl: style };
+      const locatorMap = new Map((locators ?? []).map((l) => [l.key, l]));
+      const sections: string[] = [];
+
+      if (grouped) {
+        const citItems = items.map((item) => {
+          const loc = locatorMap.get(item.data.key);
+          return {
+            item,
+            locator: loc?.locator,
+            prefix: loc?.prefix,
+            suffix: loc?.suffix,
+            suppressAuthor: loc?.suppressAuthor,
+          };
+        });
+        const xml = buildFieldCodeXml(citItems, options);
+        sections.push("## Grouped Citation Field Code\n");
+        sections.push("```xml\n" + xml + "\n```");
+      } else {
+        sections.push("## Individual Citation Field Codes\n");
+        for (const item of items) {
+          const loc = locatorMap.get(item.data.key);
+          const xml = buildFieldCodeXml(
+            [{
+              item,
+              locator: loc?.locator,
+              prefix: loc?.prefix,
+              suffix: loc?.suffix,
+              suppressAuthor: loc?.suppressAuthor,
+            }],
+            options
+          );
+          sections.push(`### ${item.data.title} [\`${item.data.key}\`]\n`);
+          sections.push("```xml\n" + xml + "\n```\n");
+        }
+      }
+
+      if (bibliography) {
+        sections.push("## Bibliography Field Code\n");
+        sections.push("```xml\n" + buildBibliographyFieldXml() + "\n```\n");
+      }
+
+      const styleUrl = style ?? "http://www.zotero.org/styles/apa";
+      sections.push("## docProps/custom.xml (Zotero Preferences)\n");
+      sections.push("```xml\n" + buildZoteroPrefsXml(styleUrl) + "\n```");
+
+      return { content: [{ type: "text", text: sections.join("\n") }] };
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: `Error generating field codes: ${error}` }],
         isError: true,
       };
     }

@@ -80,6 +80,7 @@ export class ZoteroClient {
   private headers: Record<string, string>;
   private itemCache = new Map<string, { item: ZoteroItem; time: number }>();
   private cacheMaxAge = 30 * 60 * 1000; // 30 minutes
+  private cachedUserId?: string;
 
   constructor(config: ZoteroConfig) {
     this.config = config;
@@ -361,6 +362,29 @@ export class ZoteroClient {
     return items
       .filter((item) => item.csljson)
       .map((item) => item.csljson as Record<string, unknown>);
+  }
+
+  /**
+   * Get the Zotero user ID (numeric).
+   * In web mode, returns the configured userId.
+   * In local mode, queries the running Zotero app. Cached for the session.
+   */
+  async getUserId(): Promise<string> {
+    if (this.cachedUserId) return this.cachedUserId;
+    if (this.config.userId) {
+      this.cachedUserId = this.config.userId;
+      return this.cachedUserId;
+    }
+
+    // Local mode: query the Zotero app
+    const port = this.config.localPort ?? 23119;
+    const url = `http://localhost:${port}/api/users/0`;
+    const response = await this.request(url);
+    const data = (await response.json()) as { userID?: number; id?: number };
+    const id = data.userID ?? data.id;
+    if (!id) throw new Error("Zotero API did not return a user ID");
+    this.cachedUserId = String(id);
+    return this.cachedUserId;
   }
 
   /**
