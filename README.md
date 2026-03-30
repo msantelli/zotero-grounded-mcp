@@ -1,12 +1,45 @@
-# zotero-mcp
+# zotero-grounded-mcp
 
-An MCP (Model Context Protocol) server that gives Claude access to your Zotero reference library. Claude can search your real references, generate accurate citations, build bibliographies, and read your notes -- no more hallucinated page numbers or wrong years.
+An MCP (Model Context Protocol) server that gives any MCP-compatible assistant access to your Zotero reference library. It can search your real references, generate accurate citations, build bibliographies, read your notes, and turn `.docx` citation stubs into live Zotero field codes.
+
+The design goal is conservative: use Zotero as the ground truth for references, rather than giving an agent room to invent sources silently and slip them into your work.
 
 ## What is an MCP server?
 
-MCP (Model Context Protocol) is a standard that lets AI assistants like Claude call external tools. This project is an MCP **server**: a small program that runs on your machine, connects to your Zotero library, and exposes tools that Claude can use during a conversation.
+MCP (Model Context Protocol) is a standard that lets AI assistants call external tools in a consistent way. This project is an MCP **server**: a small program that runs on your machine, connects to your Zotero library, and exposes tools that any MCP-ready client can call.
 
-You don't interact with this server directly. Instead, you configure Claude Code (or another MCP client) to start it automatically. When Claude needs to look up a reference, it calls the tools this server provides.
+You usually do not interact with this server directly. Instead, you configure an MCP client to start it automatically. When your assistant needs to look up a reference, validate a citation, or process a `.docx`, it calls the tools this server provides.
+
+## Read-only by design
+
+This server treats [Zotero](https://www.zotero.org/) as a source of truth, not as something the assistant should rewrite. The Zotero-facing operations are read-only:
+
+- search items
+- fetch item metadata
+- list collections
+- read notes and attachments
+- format citations and bibliographies from existing Zotero items
+
+The server does **not** create, edit, move, or delete Zotero library items. The only write operation in the overall workflow is on your local `.docx` output when `zotero_process_docx` converts validated stubs into Zotero field codes.
+
+This is intentional. Many Zotero-related assistant integrations optimize for broad library automation. This project prioritizes verification instead: the assistant should have to cite what is actually in Zotero, so your bibliography is anchored to records you already control.
+
+## Works with any MCP-ready client
+
+This server is not specific to Claude Cowork. It works with any MCP-ready system that can launch a stdio MCP server, including:
+
+- Claude Code
+- Claude Desktop / Cowork
+- custom MCP clients
+- editor integrations or agent frameworks that support MCP
+
+The only requirement is that the client can start:
+
+```bash
+node /full/path/to/zotero-grounded-mcp/dist/index.js
+```
+
+with the appropriate environment variables.
 
 ## Tools provided
 
@@ -27,22 +60,22 @@ Citation formatting uses **citeproc-js** with the Chicago Author-Date style (18t
 ## Prerequisites
 
 - **Node.js 18+** and **npm** -- check with `node -v` and `npm -v`
-- **Zotero desktop app** (for local mode) -- just have it running
-- **Claude Code** -- the CLI tool from Anthropic (`npm install -g @anthropic-ai/claude-code`)
+- **Zotero desktop app** (for local mode) -- download from [zotero.org](https://www.zotero.org/)
+- **An MCP-compatible client** -- Claude Code, Claude Desktop / Cowork, or any other MCP-ready system
 
 ## Installation (step by step)
 
 ### 1. Clone the project
 
 ```bash
-git clone <your-repo-url> zotero-mcp
-cd zotero-mcp
+git clone <your-repo-url> zotero-grounded-mcp
+cd zotero-grounded-mcp
 ```
 
 Or if you already have the folder:
 
 ```bash
-cd zotero-mcp
+cd zotero-grounded-mcp
 ```
 
 ### 2. Install dependencies
@@ -59,23 +92,39 @@ npm run build
 
 This compiles TypeScript to `dist/`. The server runs from `dist/index.js`.
 
-### 4. Register the MCP server with Claude Code
+### 4. Register the MCP server with your MCP client
 
-This is the key step. You need to tell Claude Code where to find this server. You have two options:
+This is the key step. You need to tell your MCP client where to find this server. In generic terms, the client should launch:
 
-#### Option A: Using the Claude Code CLI (recommended)
+```json
+{
+  "mcpServers": {
+    "zotero": {
+      "command": "node",
+      "args": ["/full/path/to/zotero-grounded-mcp/dist/index.js"],
+      "env": {
+        "ZOTERO_MODE": "local"
+      }
+    }
+  }
+}
+```
+
+Replace the path with the real absolute path to `dist/index.js`.
+
+### 4A. Claude Code example
 
 Open a terminal and run:
 
 ```bash
-claude mcp add zotero node /full/path/to/zotero-mcp/dist/index.js -e ZOTERO_MODE=local
+claude mcp add zotero node /full/path/to/zotero-grounded-mcp/dist/index.js -e ZOTERO_MODE=local
 ```
 
-Replace `/full/path/to/zotero-mcp` with the actual absolute path to this project. You can find it by running `pwd` inside the project folder.
+Replace `/full/path/to/zotero-grounded-mcp` with the actual absolute path to this project. You can find it by running `pwd` inside the project folder.
 
 This registers the server globally so Claude Code can use it in any conversation.
 
-#### Option B: Edit settings.json manually
+### 4B. Claude Code settings.json example
 
 Open (or create) the file `~/.claude/settings.json` and add:
 
@@ -84,7 +133,7 @@ Open (or create) the file `~/.claude/settings.json` and add:
   "mcpServers": {
     "zotero": {
       "command": "node",
-      "args": ["/full/path/to/zotero-mcp/dist/index.js"],
+      "args": ["/full/path/to/zotero-grounded-mcp/dist/index.js"],
       "env": {
         "ZOTERO_MODE": "local"
       }
@@ -95,7 +144,7 @@ Open (or create) the file `~/.claude/settings.json` and add:
 
 Again, replace the path with the real absolute path.
 
-#### Option C: Project-level configuration
+### 4C. Claude Code project-level configuration
 
 If you only want this server available when working inside a specific project, create `.claude/settings.json` in that project's root:
 
@@ -104,7 +153,7 @@ If you only want this server available when working inside a specific project, c
   "mcpServers": {
     "zotero": {
       "command": "node",
-      "args": ["/full/path/to/zotero-mcp/dist/index.js"],
+      "args": ["/full/path/to/zotero-grounded-mcp/dist/index.js"],
       "env": {
         "ZOTERO_MODE": "local"
       }
@@ -119,11 +168,11 @@ Open the Zotero desktop app. It exposes a local API on port 23119 automatically 
 
 ### 6. Verify it works
 
-Start Claude Code and ask something like:
+Start your MCP client and issue a simple Zotero lookup, for example:
 
 > "Search my Zotero library for articles about pragmatism"
 
-If everything is set up correctly, Claude will call the `zotero_search` tool and return results from your actual library. You should see a tool call indicator in the output.
+If everything is set up correctly, the client will call `zotero_search` and return results from your actual library. You should see a tool call indicator or MCP tool trace in the client output.
 
 If you see an error like "Could not connect to Zotero", make sure the Zotero desktop app is open.
 
@@ -133,7 +182,7 @@ If you want to access your library without Zotero running locally (e.g., on a se
 
 ### 1. Get your API credentials
 
-1. Go to https://www.zotero.org/settings/keys
+1. Go to [zotero.org/settings/keys](https://www.zotero.org/settings/keys)
 2. Click "Create new private key"
 3. Check "Allow library access" (read-only is fine)
 4. Save the key
@@ -142,7 +191,7 @@ If you want to access your library without Zotero running locally (e.g., on a se
 ### 2. Register with web mode
 
 ```bash
-claude mcp add zotero node /full/path/to/zotero-mcp/dist/index.js \
+claude mcp add zotero node /full/path/to/zotero-grounded-mcp/dist/index.js \
   -e ZOTERO_MODE=web \
   -e ZOTERO_USER_ID=your_numeric_id \
   -e ZOTERO_API_KEY=your_api_key
@@ -155,7 +204,7 @@ Or in `settings.json`:
   "mcpServers": {
     "zotero": {
       "command": "node",
-      "args": ["/full/path/to/zotero-mcp/dist/index.js"],
+      "args": ["/full/path/to/zotero-grounded-mcp/dist/index.js"],
       "env": {
         "ZOTERO_MODE": "web",
         "ZOTERO_USER_ID": "your_numeric_id",
@@ -171,7 +220,7 @@ Or in `settings.json`:
 To access a Zotero group library instead of your personal library, add the group config:
 
 ```bash
-claude mcp add zotero node /full/path/to/zotero-mcp/dist/index.js \
+claude mcp add zotero node /full/path/to/zotero-grounded-mcp/dist/index.js \
   -e ZOTERO_MODE=local \
   -e ZOTERO_LIBRARY_TYPE=group \
   -e ZOTERO_GROUP_ID=your_group_id
@@ -179,9 +228,9 @@ claude mcp add zotero node /full/path/to/zotero-mcp/dist/index.js \
 
 You can find the group ID in the URL when you view the group on zotero.org (e.g., `https://www.zotero.org/groups/12345` → group ID is `12345`).
 
-## Using with Claude Cowork (Windows/Mac desktop)
+## Claude Cowork example (Windows/Mac desktop)
 
-Claude Cowork is Anthropic's agentic AI that runs in a virtual machine on your desktop. It supports MCP servers through the Claude Desktop config -- the server runs on your host machine and Cowork bridges to it automatically.
+Claude Cowork is one example of an MCP-capable environment. It runs in a virtual machine on your desktop, while this server runs on the host machine and is exposed through the Claude Desktop config.
 
 ### 1. Prerequisites
 
@@ -194,7 +243,7 @@ Claude Cowork is Anthropic's agentic AI that runs in a virtual machine on your d
 Open PowerShell (Windows) or Terminal (Mac):
 
 ```bash
-cd C:\Users\yourname\zotero-mcp   # or wherever you cloned it
+cd C:\Users\yourname\zotero-grounded-mcp   # or wherever you cloned it
 npm install
 npm run build
 ```
@@ -212,7 +261,7 @@ Add the MCP server (create the file if it doesn't exist):
   "mcpServers": {
     "zotero": {
       "command": "node",
-      "args": ["C:\\Users\\yourname\\zotero-mcp\\dist\\index.js"],
+      "args": ["C:\\Users\\yourname\\zotero-grounded-mcp\\dist\\index.js"],
       "env": {
         "ZOTERO_MODE": "local"
       }
@@ -240,28 +289,37 @@ Quit and reopen Claude Desktop. The Zotero tools should now appear in Cowork ses
 | `ZOTERO_API_KEY` | -- | API key from zotero.org/settings/keys (web mode only) |
 | `ZOTERO_LOCAL_PORT` | `23119` | Port for the local Zotero connector |
 
-## Writing documents with live Zotero citations
+## Using drafts to produce Zotero-ready `.docx` files
 
-This is the main workflow for producing .docx files with Zotero-managed citations. No references are hallucinated -- every citation is validated against your real library.
+This is the main workflow for turning an existing draft into a `.docx` with Zotero-managed citations. The key idea is not "have the assistant invent a paper from scratch" (which is not generally a good idea), but "take an existing draft in another format (like .md, .txt, or even a rough .docx), find the correct references in Zotero, insert validated stubs, and then convert those stubs into Zotero field codes".
+
+This workflow is tied to Zotero's official [Word Processor Plugins](https://www.zotero.org/support/word_processor_integration), especially the [Zotero Word Plugin usage guide](https://www.zotero.org/support/word_processor_plugin_usage). In ordinary Zotero usage, those docs describe the commands this MCP is designed to feed into safely:
+
+- **Add/Edit Citation**
+- **Add/Edit Bibliography**
+- **Document Preferences**
+- **Refresh**
+- **Unlink Citations**
 
 ### How it works
 
 ```
-Your .md notes
+Your draft (.md, .txt, pasted text, or a rough .docx source)
     |
     v
-Claude (with zotero-mcp)
+Your MCP client + zotero-grounded-mcp
     |  1. Searches your Zotero library (zotero_search)
     |  2. Reads abstracts, notes, attachments
-    |  3. Generates validated citation stubs (zotero_cite_stub)
-    |  4. Writes the document with stubs in place of citations
+    |  3. Matches claims in the draft to real Zotero items
+    |  4. Generates validated citation stubs (zotero_cite_stub)
+    |  5. Produces a fresh .docx containing those stubs
     v
 .docx file with stubs like {{CITE:4XD6XSLU|lib=user:1234567|p=42}}
     |
     v
-Claude runs zotero_process_docx (fire-and-forget)
+Your MCP client runs zotero_process_docx
     |  Edits the .docx XML directly: fetches item data from Zotero,
-    |  builds the 5-part field code structure Zotero expects
+    |  builds the field code structure Zotero's Word integration expects
     v
 .docx with live Zotero field codes
     |
@@ -276,11 +334,18 @@ and included in Zotero's bibliography management
 
 ### Step by step
 
-1. **Ask Claude to write your document** using references from your library:
+1. **Provide a real draft and ask the assistant to ground it in your Zotero library.** For example:
 
-   > "Write a literature review on inferentialism using sources from my Zotero. Use Chicago citations and include a bibliography."
+   > "Take this draft about logical expressivism, find the correct references in my Zotero library, and create a fresh `.docx` with validated Zotero stubs for every citation."
 
-   Claude will search your library, read the relevant items, and produce a document with validated stubs like:
+   A good client workflow is:
+
+   - start from a draft you already have
+   - ask the assistant to identify which claims need citations
+   - ask it to search Zotero for the matching items
+   - have it generate a new `.docx` with validated stubs rather than hand-written references
+
+   The resulting draft will contain stubs like:
 
    ```
    Brandom argues that meaning is constituted by inferential relations
@@ -290,18 +355,27 @@ and included in Zotero's bibliography management
    {{BIBLIOGRAPHY|lib=user:1234567|style=chicago-author-date}}
    ```
 
-2. **Save as .docx** (Claude or you can do this).
+2. **Save or export that result as `.docx`.**
 
-3. **Ask Claude to process the file** -- it calls `zotero_process_docx` which converts all stubs into Zotero field codes directly in the .docx. No macros or manual steps needed.
+3. **Process the `.docx` through `zotero_process_docx`.** This converts the stubs directly into Zotero field codes inside the `.docx`. No macros or manual XML editing are required.
 
-4. **Open the processed .docx in Word** and click **Zotero > Refresh**. Zotero formats everything:
+4. **Open the processed `.docx` in Word** and click **Zotero > Refresh**. This is the same refresh action documented in Zotero's official [Word Plugin usage guide](https://www.zotero.org/support/word_processor_plugin_usage). Zotero formats everything:
    - `{{CITE:4XD6XSLU|lib=user:1234567|p=42}}` becomes `(Brandom, 2019, p. 42)`
    - The bibliography appears at the end with all cited works
    - You can now change citation styles, add references, etc. through Zotero as usual
 
+The important distinction is:
+
+- the assistant helps find and validate the references
+- `zotero_cite_stub` ensures the references are real Zotero items
+- `zotero_process_docx` converts the stubbed `.docx` into a Zotero-ready `.docx`
+- Zotero itself takes ownership after refresh through the normal Word plugin workflow
+
+In other words, this MCP is an on-ramp into Zotero's existing document model, not a parallel citation system.
+
 ### Anti-hallucination guardrail
 
-The `zotero_cite_stub` tool **validates every item key** against your Zotero library before generating stubs. If Claude tries to cite an item that doesn't exist, the tool returns an error:
+The `zotero_cite_stub` tool **validates every item key** against your Zotero library before generating stubs. If the assistant tries to cite an item that doesn't exist, the tool returns an error:
 
 ```
 Error: The following Zotero item keys were not found in the library: FAKEKEY99.
@@ -310,6 +384,8 @@ Use zotero_search to find valid keys.
 
 This means every citation in the final document is guaranteed to reference a real item in your library.
 
+In practice, that makes Zotero the reference authority for the workflow. The assistant can help search, match, and structure the draft, but it cannot quietly fabricate bibliography entries outside your library and pass them off as verified references. You should still verify that the selected Zotero items are relevant to your argument, but the system is designed so that verified citations come from your actual library rather than from invented references.
+
 ## Other example workflows
 
 - *"Search my Zotero for Brandom's work on inferentialism"* -- uses `zotero_search`
@@ -317,14 +393,17 @@ This means every citation in the final document is guaranteed to reference a rea
 - *"Build a bibliography from these 5 items"* -- uses `zotero_bibliography`
 - *"What are my notes on this paper?"* -- uses `zotero_get_notes`
 - *"What PDFs do I have for this item?"* -- uses `zotero_get_attachments`
+- *"Take this draft section, find the right Zotero references, and generate a `.docx` with citation stubs"* -- uses `zotero_search`, `zotero_cite_stub`
+- *"Process this stubbed `.docx` into a Zotero-ready `.docx`"* -- uses `zotero_process_docx`
 
 ## Privacy and security
 
 This server is **local-first and privacy-respecting**:
 
 - **Local mode**: all data stays on your machine (talks only to `localhost:23119`)
-- **Web mode**: talks only to `api.zotero.org` (your own Zotero cloud account)
-- **No third-party services**: no data is sent to OpenAI, Google, or any other external API
+- **Web mode**: talks only to `api.zotero.org` and your own [Zotero.org](https://www.zotero.org/) account
+- **Read-only Zotero access**: it reads your library metadata but does not modify Zotero records
+- **No third-party services**: no data is sent to third parties through the MCP server, there are no more privacy considerations than using a LLM in the cloud in the first place. If you are using a local model, all data stays on your machine.
 
 ## Troubleshooting
 
@@ -337,10 +416,11 @@ You're in web mode but forgot to set the credentials. Add `ZOTERO_USER_ID` and `
 **"Zotero API request timed out"**
 The Zotero API didn't respond within 10 seconds. Check your internet connection (web mode) or restart Zotero (local mode).
 
-**Claude doesn't seem to use the Zotero tools**
-1. Check that the server is registered: run `claude mcp list` to see configured servers
+**My MCP client doesn't seem to use the Zotero tools**
+1. Check that the server is registered in your client
 2. Make sure the path in your config points to the built `dist/index.js`, not `src/index.ts`
-3. Try restarting Claude Code after adding the MCP config
+3. Restart the MCP client after adding the config
+4. If you are using Claude Code specifically, run `claude mcp list` to inspect configured servers
 
 **Tools work but citations look plain**
 The server uses citeproc-js for proper citation formatting. If an item doesn't have CSL-JSON data from Zotero, it falls back to a simplified format. This is normal for some item types.
@@ -358,7 +438,7 @@ npm test           # run the test suite (vitest)
 ## Project structure
 
 ```
-zotero-mcp/
+zotero-grounded-mcp/
 ├── src/
 │   ├── index.ts             # MCP server entry point, tool definitions
 │   ├── zotero-client.ts     # Zotero API client (local + web)

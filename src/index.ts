@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * zotero-mcp — An MCP server that gives Claude access to your Zotero library.
+ * zotero-grounded-mcp — A read-only MCP server that uses Zotero as ground truth.
  *
  * Tools exposed:
  *   - zotero_search        Search your library by query, tag, or collection
@@ -89,7 +89,7 @@ function summariseItem(item: ZoteroItem): string {
 // --- Server setup ---
 
 const server = new McpServer({
-  name: "zotero-mcp",
+  name: "zotero-grounded-mcp",
   version: serverVersion,
 });
 
@@ -587,7 +587,7 @@ Give this tool the file path and it does everything: fetches item data from Zote
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error(`zotero-mcp running in ${mode} mode`);
+  console.error(`zotero-grounded-mcp running in ${mode} mode`);
 
   // Non-blocking health check
   client.testConnection().then((ok) => {

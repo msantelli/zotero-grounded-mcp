@@ -1,7 +1,7 @@
 {
-  "name": "zotero-mcp",
+  "name": "zotero-grounded-mcp",
   "version": "1.0.0",
-  "description": "MCP server that connects Claude to your Zotero library for citation management",
+  "description": "Read-only MCP server that uses Zotero as ground truth for citation and docx workflows",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
