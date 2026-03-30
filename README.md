@@ -68,7 +68,7 @@ Citation formatting uses **citeproc-js** with the Chicago Author-Date style (18t
 ### 1. Clone the project
 
 ```bash
-git clone <your-repo-url> zotero-grounded-mcp
+git clone https://github.com/msantelli/zotero-grounded-mcp.git
 cd zotero-grounded-mcp
 ```
 
