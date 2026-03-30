@@ -660,15 +660,14 @@ End Function
 ' Convert item key to deterministic numeric ID (same as TypeScript)
 '----------------------------------------------------------------
 Private Function KeyToNumericId(key As String) As Long
-    Dim hash As Long: hash = 0
+    Dim hash As Double: hash = 0
     Dim i As Long
     For i = 1 To Len(key)
-        hash = (hash * 31 + Asc(Mid(key, i, 1)))
-        ' Keep in Long range
-        If hash > 2000000000 Then hash = hash - 2000000000
-        If hash < -2000000000 Then hash = hash + 2000000000
+        hash = hash * 31 + Asc(Mid(key, i, 1))
     Next i
-    KeyToNumericId = Abs(hash)
+    ' Reduce to positive Long range
+    hash = hash - Int(hash / 2147483647#) * 2147483647#
+    KeyToNumericId = CLng(Abs(hash))
 End Function
 
 '----------------------------------------------------------------
