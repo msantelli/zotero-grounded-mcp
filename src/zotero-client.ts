@@ -43,6 +43,10 @@ export interface ZoteroItem {
     publisher?: string;
     place?: string;
     language?: string;
+    bookTitle?: string;
+    proceedingsTitle?: string;
+    thesisType?: string;
+    university?: string;
     tags: Array<{ tag: string }>;
     collections: string[];
     dateAdded: string;
@@ -71,7 +75,7 @@ export class ZoteroClient {
 
     if (config.mode === "local") {
       const port = config.localPort ?? 23119;
-      this.baseUrl = `http://localhost:${port}/api`;
+      this.baseUrl = `http://localhost:${port}/api/users/0`;
       this.headers = { "Content-Type": "application/json" };
     } else {
       if (!config.userId || !config.apiKey) {
@@ -83,6 +87,57 @@ export class ZoteroClient {
         "Zotero-API-Key": config.apiKey,
         "Content-Type": "application/json",
       };
+    }
+  }
+
+  /**
+   * Normalize a ZoteroItem's csljson field.
+   * The Zotero API returns csljson as a JSON string wrapping an array; we want
+   * a parsed object (the first element of that array).
+   */
+  private normalizeCslJson(item: ZoteroItem): ZoteroItem {
+    if (typeof item.csljson === "string") {
+      try {
+        const parsed = JSON.parse(item.csljson as unknown as string);
+        item.csljson = Array.isArray(parsed) ? parsed[0] : parsed;
+      } catch {
+        item.csljson = undefined;
+      }
+    } else if (Array.isArray(item.csljson)) {
+      item.csljson = (item.csljson as unknown as Record<string, unknown>[])[0];
+    }
+    return item;
+  }
+
+  /**
+   * Centralized HTTP request with error handling and timeout.
+   */
+  private async request(url: string): Promise<Response> {
+    try {
+      const response = await fetch(url, {
+        headers: this.headers,
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!response.ok) {
+        throw new Error(
+          `Zotero API error: ${response.status} ${response.statusText}`
+        );
+      }
+      return response;
+    } catch (error) {
+      if (error instanceof TypeError) {
+        const cause = (error as TypeError & { cause?: { code?: string } }).cause;
+        if (cause?.code === "ECONNREFUSED") {
+          throw new Error(
+            "Could not connect to Zotero. Is Zotero desktop running? " +
+              `(tried ${url.split("?")[0]})`
+          );
+        }
+      }
+      if (error instanceof DOMException && error.name === "TimeoutError") {
+        throw new Error("Zotero API request timed out after 10 seconds.");
+      }
+      throw error;
     }
   }
 
@@ -109,11 +164,9 @@ export class ZoteroClient {
       url = `${this.baseUrl}/items?${params}`;
     }
 
-    const response = await fetch(url, { headers: this.headers });
-    if (!response.ok) {
-      throw new Error(`Zotero API error: ${response.status} ${response.statusText}`);
-    }
-    return (await response.json()) as ZoteroItem[];
+    const response = await this.request(url);
+    const items = (await response.json()) as ZoteroItem[];
+    return items.map((i) => this.normalizeCslJson(i));
   }
 
   /**
@@ -125,27 +178,41 @@ export class ZoteroClient {
     params.set("include", "data,csljson");
 
     const url = `${this.baseUrl}/items/${key}?${params}`;
-    const response = await fetch(url, { headers: this.headers });
-    if (!response.ok) {
-      throw new Error(`Zotero API error: ${response.status} ${response.statusText}`);
-    }
-    return (await response.json()) as ZoteroItem;
+    const response = await this.request(url);
+    return this.normalizeCslJson((await response.json()) as ZoteroItem);
   }
 
   /**
-   * List all collections in the library.
+   * List all collections in the library, with automatic pagination.
    */
   async listCollections(): Promise<ZoteroCollection[]> {
-    const params = new URLSearchParams();
-    params.set("format", "json");
-    params.set("limit", "100");
+    const pageSize = 100;
+    let start = 0;
+    const allCollections: ZoteroCollection[] = [];
 
-    const url = `${this.baseUrl}/collections?${params}`;
-    const response = await fetch(url, { headers: this.headers });
-    if (!response.ok) {
-      throw new Error(`Zotero API error: ${response.status} ${response.statusText}`);
+    while (true) {
+      const params = new URLSearchParams();
+      params.set("format", "json");
+      params.set("limit", String(pageSize));
+      params.set("start", String(start));
+
+      const url = `${this.baseUrl}/collections?${params}`;
+      const response = await this.request(url);
+      const page = (await response.json()) as ZoteroCollection[];
+      allCollections.push(...page);
+
+      const totalResults = response.headers.get("Total-Results");
+      if (
+        !totalResults ||
+        allCollections.length >= parseInt(totalResults, 10) ||
+        page.length < pageSize
+      ) {
+        break;
+      }
+      start += pageSize;
     }
-    return (await response.json()) as ZoteroCollection[];
+
+    return allCollections;
   }
 
   /**
@@ -163,11 +230,9 @@ export class ZoteroClient {
     params.set("direction", "desc");
 
     const url = `${this.baseUrl}/collections/${collectionKey}/items?${params}`;
-    const response = await fetch(url, { headers: this.headers });
-    if (!response.ok) {
-      throw new Error(`Zotero API error: ${response.status} ${response.statusText}`);
-    }
-    return (await response.json()) as ZoteroItem[];
+    const response = await this.request(url);
+    const items = (await response.json()) as ZoteroItem[];
+    return items.map((i) => this.normalizeCslJson(i));
   }
 
   /**
@@ -184,20 +249,70 @@ export class ZoteroClient {
     params.set("limit", String(options?.limit ?? 50));
 
     const url = `${this.baseUrl}/items?${params}`;
-    const response = await fetch(url, { headers: this.headers });
-    if (!response.ok) {
-      throw new Error(`Zotero API error: ${response.status} ${response.statusText}`);
-    }
+    const response = await this.request(url);
+    const items = (await response.json()) as ZoteroItem[];
+    return items.map((i) => this.normalizeCslJson(i));
+  }
+
+  /**
+   * Get child items (notes, annotations) for a given item.
+   */
+  async getItemChildren(itemKey: string): Promise<ZoteroItem[]> {
+    const params = new URLSearchParams();
+    params.set("format", "json");
+    params.set("include", "data");
+
+    const url = `${this.baseUrl}/items/${itemKey}/children?${params}`;
+    const response = await this.request(url);
     return (await response.json()) as ZoteroItem[];
+  }
+
+  /**
+   * Get multiple items in a single API call using the itemKey parameter.
+   * Falls back to individual requests if the batch endpoint fails.
+   */
+  async getItems(keys: string[]): Promise<ZoteroItem[]> {
+    if (keys.length === 0) return [];
+    if (keys.length === 1) return [await this.getItem(keys[0])];
+
+    const params = new URLSearchParams();
+    params.set("itemKey", keys.join(","));
+    params.set("format", "json");
+    params.set("include", "data,csljson");
+
+    const url = `${this.baseUrl}/items?${params}`;
+    const response = await this.request(url);
+    const items = (await response.json()) as ZoteroItem[];
+    // Filter to only the requested keys (batch endpoint may include child items)
+    const keySet = new Set(keys);
+    return items
+      .filter((i) => keySet.has(i.key))
+      .map((i) => this.normalizeCslJson(i));
   }
 
   /**
    * Get the CSL-JSON for multiple items (useful for building bibliographies).
    */
   async getCslJson(keys: string[]): Promise<Record<string, unknown>[]> {
-    const items = await Promise.all(keys.map((k) => this.getItem(k)));
+    const items = await this.getItems(keys);
     return items
       .filter((item) => item.csljson)
       .map((item) => item.csljson as Record<string, unknown>);
+  }
+
+  /**
+   * Test connectivity to the Zotero API. Returns true if reachable.
+   */
+  async testConnection(): Promise<boolean> {
+    try {
+      const params = new URLSearchParams();
+      params.set("format", "json");
+      params.set("limit", "1");
+      const url = `${this.baseUrl}/items?${params}`;
+      await this.request(url);
+      return true;
+    } catch {
+      return false;
+    }
   }
 }

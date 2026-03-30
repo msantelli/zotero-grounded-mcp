@@ -8,6 +8,7 @@
  *   - zotero_collections   List all collections in your library
  *   - zotero_cite          Format citations for one or more items
  *   - zotero_bibliography  Generate a formatted bibliography from item keys
+ *   - zotero_get_notes     Get notes and annotations attached to an item
  *
  * Configuration is via environment variables:
  *   ZOTERO_MODE       "local" (default) or "web"
@@ -25,6 +26,7 @@ import {
   formatBibliographyEntry,
   formatBibliography,
 } from "./formatter.js";
+import { htmlToMarkdown } from "./html-utils.js";
 
 // --- Config from env ---
 const mode = (process.env.ZOTERO_MODE ?? "local") as "local" | "web";
@@ -198,13 +200,17 @@ server.tool(
       .array(z.string())
       .min(1)
       .describe("Array of Zotero item keys to cite"),
+    style: z
+      .string()
+      .optional()
+      .describe("CSL style: 'chicago-author-date' (default), 'apa', 'mla', 'ieee', 'harvard'"),
   },
-  async ({ keys }) => {
+  async ({ keys, style }) => {
     try {
-      const items = await Promise.all(keys.map((k) => client.getItem(k)));
+      const items = await client.getItems(keys);
       const citations = items.map((item) => ({
-        inline: formatInlineCitation(item),
-        full: formatBibliographyEntry(item),
+        inline: formatInlineCitation(item, style),
+        full: formatBibliographyEntry(item, style),
         key: item.data.key,
         title: item.data.title,
       }));
@@ -235,11 +241,15 @@ server.tool(
       .array(z.string())
       .min(1)
       .describe("Array of Zotero item keys to include"),
+    style: z
+      .string()
+      .optional()
+      .describe("CSL style: 'chicago-author-date' (default), 'apa', 'mla', 'ieee', 'harvard'"),
   },
-  async ({ keys }) => {
+  async ({ keys, style }) => {
     try {
-      const items = await Promise.all(keys.map((k) => client.getItem(k)));
-      const bib = formatBibliography(items);
+      const items = await client.getItems(keys);
+      const bib = formatBibliography(items, style);
       return {
         content: [
           {
@@ -257,11 +267,96 @@ server.tool(
   }
 );
 
+// ──────────────────────────────────────────
+// Tool: zotero_get_notes
+// ──────────────────────────────────────────
+server.tool(
+  "zotero_get_notes",
+  "Get notes and annotations attached to a Zotero item. Returns note content as Markdown and PDF annotations with highlighted text, comments, and page numbers.",
+  {
+    key: z.string().describe("Zotero item key (e.g. 'ABC12345')"),
+  },
+  async ({ key }) => {
+    try {
+      const children = await client.getItemChildren(key);
+
+      const notes = children.filter(
+        (c) => c.data.itemType === "note"
+      );
+      const annotations = children.filter(
+        (c) => c.data.itemType === "annotation"
+      );
+
+      if (notes.length === 0 && annotations.length === 0) {
+        return {
+          content: [
+            { type: "text", text: `No notes or annotations found for item \`${key}\`.` },
+          ],
+        };
+      }
+
+      const sections: string[] = [];
+
+      if (notes.length > 0) {
+        sections.push(`## Notes (${notes.length})\n`);
+        for (const note of notes) {
+          const noteHtml = (note.data as Record<string, unknown>).note as string ?? "";
+          const md = htmlToMarkdown(noteHtml);
+          sections.push(md);
+          sections.push("---");
+        }
+      }
+
+      if (annotations.length > 0) {
+        sections.push(`## Annotations (${annotations.length})\n`);
+        for (const ann of annotations) {
+          const d = ann.data as Record<string, unknown>;
+          const text = (d.annotationText as string) ?? "";
+          const comment = (d.annotationComment as string) ?? "";
+          const page = (d.annotationPageLabel as string) ?? "";
+          const color = (d.annotationColor as string) ?? "";
+
+          const parts: string[] = [];
+          if (text) parts.push(`> ${text}`);
+          if (comment) parts.push(comment);
+          const meta: string[] = [];
+          if (page) meta.push(`p. ${page}`);
+          if (color) meta.push(color);
+          if (meta.length > 0) parts.push(`*(${meta.join(", ")})*`);
+
+          sections.push(parts.join("\n"));
+          sections.push("");
+        }
+      }
+
+      return {
+        content: [{ type: "text", text: sections.join("\n") }],
+      };
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: `Error fetching notes: ${error}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
 // --- Start ---
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error(`zotero-mcp running in ${mode} mode`);
+
+  // Non-blocking health check
+  client.testConnection().then((ok) => {
+    if (ok) {
+      console.error("Zotero connection verified.");
+    } else {
+      console.error(
+        "Warning: Could not reach Zotero. Tools will fail until Zotero is available."
+      );
+    }
+  });
 }
 
 main().catch((err) => {

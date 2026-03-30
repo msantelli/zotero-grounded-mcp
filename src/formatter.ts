@@ -1,19 +1,92 @@
 /**
- * Citation formatter using CSL (Citation Style Language).
- *
- * Takes CSL-JSON items from Zotero and formats them into human-readable
- * citations and bibliography entries in any CSL style (Chicago, APA, etc.).
- *
- * For a first version we provide a built-in simple formatter.
- * TODO: integrate citeproc-js for full CSL support once the basic MCP works.
+ * Citation formatter — delegates to citeproc-js when CSL-JSON is available,
+ * falls back to a simplified Chicago-style formatter otherwise.
  */
 
 import type { ZoteroItem } from "./zotero-client.js";
+import { getEngine } from "./citation-engine.js";
 
 /**
  * Format a single item as a short inline citation: (Author Year)
+ * Uses citeproc when CSL-JSON is available.
  */
-export function formatInlineCitation(item: ZoteroItem): string {
+export function formatInlineCitation(
+  item: ZoteroItem,
+  style: string = "chicago-author-date"
+): string {
+  if (item.csljson) {
+    try {
+      const csl = { ...item.csljson, id: String(item.csljson.id ?? item.key) };
+      const engine = getEngine(style);
+      engine.registerItems([csl]);
+      return engine.makeCitation([String(csl.id)]);
+    } catch {
+      // Fall through to simple formatter
+    }
+  }
+  return simpleInlineCitation(item);
+}
+
+/**
+ * Format a single item as a full bibliography entry.
+ * Uses citeproc when CSL-JSON is available.
+ */
+export function formatBibliographyEntry(
+  item: ZoteroItem,
+  style: string = "chicago-author-date"
+): string {
+  if (item.csljson) {
+    try {
+      const csl = { ...item.csljson, id: String(item.csljson.id ?? item.key) };
+      const engine = getEngine(style);
+      engine.registerItems([csl]);
+      const entries = engine.makeBibliography();
+      if (entries.length > 0) return entries[0];
+    } catch {
+      // Fall through to simple formatter
+    }
+  }
+  return simpleBibliographyEntry(item);
+}
+
+/**
+ * Format a full bibliography from multiple items, sorted alphabetically.
+ * Uses citeproc when CSL-JSON is available.
+ */
+export function formatBibliography(
+  items: ZoteroItem[],
+  style: string = "chicago-author-date"
+): string {
+  // Try citeproc for all items that have CSL-JSON
+  const withCsl = items.filter((i) => i.csljson);
+  const withoutCsl = items.filter((i) => !i.csljson);
+
+  const entries: string[] = [];
+
+  if (withCsl.length > 0) {
+    try {
+      const engine = getEngine(style);
+      const cslItems = withCsl.map((item) => ({
+        ...item.csljson!,
+        id: String(item.csljson!.id ?? item.key),
+      }));
+      engine.registerItems(cslItems);
+      entries.push(...engine.makeBibliography());
+    } catch {
+      // Fall back to simple for all
+      entries.push(...withCsl.map((item) => simpleBibliographyEntry(item)));
+    }
+  }
+
+  // Simple formatter for items without CSL-JSON
+  entries.push(...withoutCsl.map((item) => simpleBibliographyEntry(item)));
+
+  return entries.sort((a, b) => a.localeCompare(b)).join("\n\n");
+}
+
+// --- Simple (fallback) formatters ---
+
+function simpleInlineCitation(item: ZoteroItem): string {
   const firstAuthor = item.data.creators?.[0];
   const authorStr = firstAuthor
     ? firstAuthor.lastName ?? firstAuthor.name ?? "Unknown"
@@ -23,11 +96,7 @@ export function formatInlineCitation(item: ZoteroItem): string {
   return `(${authorStr}${etAl} ${year})`;
 }
 
-/**
- * Format a single item as a full bibliography entry (Chicago-ish style).
- * This is a simplified formatter; the full citeproc integration will replace it.
- */
-export function formatBibliographyEntry(item: ZoteroItem): string {
+function simpleBibliographyEntry(item: ZoteroItem): string {
   const authors = formatAuthors(item.data.creators ?? []);
   const year = extractYear(item.data.date);
   const title = item.data.title ?? "Untitled";
@@ -49,14 +118,14 @@ export function formatBibliographyEntry(item: ZoteroItem): string {
     }
 
     case "bookSection": {
-      const bookTitle = (item.data as Record<string, unknown>).bookTitle as string ?? "";
+      const bookTitle = item.data.bookTitle ?? "";
       const publisher = item.data.publisher ?? "";
       const pages = item.data.pages ? `, ${item.data.pages}` : "";
       return `${authors} (${year}). "${title}." In *${bookTitle}*${pages}. ${publisher}.`;
     }
 
     case "conferencePaper": {
-      const procTitle = (item.data as Record<string, unknown>).proceedingsTitle as string ?? "";
+      const procTitle = item.data.proceedingsTitle ?? "";
       return `${authors} (${year}). "${title}." In *${procTitle}*.`;
     }
 
@@ -72,20 +141,15 @@ export function formatBibliographyEntry(item: ZoteroItem): string {
   }
 }
 
-/**
- * Format a full bibliography from multiple items, sorted by author/year.
- */
-export function formatBibliography(items: ZoteroItem[]): string {
-  const entries = items
-    .map((item) => formatBibliographyEntry(item))
-    .sort((a, b) => a.localeCompare(b));
-  return entries.join("\n\n");
-}
-
 // --- Helpers ---
 
 function formatAuthors(
-  creators: Array<{ creatorType: string; firstName?: string; lastName?: string; name?: string }>
+  creators: Array<{
+    creatorType: string;
+    firstName?: string;
+    lastName?: string;
+    name?: string;
+  }>
 ): string {
   const authors = creators.filter(
     (c) => c.creatorType === "author" || c.creatorType === "editor"
