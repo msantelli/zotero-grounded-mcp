@@ -77,7 +77,7 @@ export async function processDocxStubs(
     const instrText = `ADDIN ZOTERO_BIBL {&quot;uncited&quot;:[],&quot;omitted&quot;:[],&quot;custom&quot;:[]} CSL_BIBLIOGRAPHY`;
     const displayText = "[Bibliography — click Zotero &gt; Refresh]";
 
-    return `</w:t></w:r>${buildFieldXml(instrText, displayText)}<w:r><w:t>`;
+    return `</w:t></w:r>${buildFieldXml(instrText, displayText)}<w:r><w:t xml:space="preserve">`;
   });
 
   // Process {{CITE:...}} stubs — need async for API calls
@@ -151,7 +151,7 @@ export async function processDocxStubs(
     // The stub may be inside a <w:t> element. We need to close the
     // text run before the field and reopen it after, so the field XML
     // sits between runs (not nested inside <w:t>).
-    xml = xml.replace(cite.fullMatch, `</w:t></w:r>${fieldXml}<w:r><w:t>`);
+    xml = xml.replace(cite.fullMatch, `</w:t></w:r>${fieldXml}<w:r><w:t xml:space="preserve">`);
     citationCount++;
   }
 

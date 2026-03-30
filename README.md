@@ -20,22 +20,9 @@ You don't interact with this server directly. Instead, you configure Claude Code
 | `zotero_get_notes` | Get notes and PDF annotations attached to an item |
 | `zotero_get_attachments` | Get PDF and file attachments for an item |
 | `zotero_cite_stub` | Generate validated citation stubs for .docx documents |
+| `zotero_process_docx` | Convert stubs in a .docx into live Zotero field codes |
 
 Citation formatting uses **citeproc-js** with the Chicago Author-Date style (18th ed.) by default. The `zotero_cite` and `zotero_bibliography` tools accept an optional `style` parameter.
-
-## Using `.docx` citation stubs
-
-For Word documents, use `zotero_cite_stub` instead of pasting plain-text citations by hand. The tool validates every Zotero key and returns stubs that carry library context for either personal or group libraries.
-
-Typical output looks like:
-
-```text
-{{CITE:ABCD1234|lib=user:1234567}}
-{{CITE:ABCD1234;EFGH5678|lib=group:98765|p=42}}
-{{BIBLIOGRAPHY|lib=user:1234567|style=chicago-author-date}}
-```
-
-After saving the document as `.docx`, open it in Word and run the macro in [`word-macro/`](./word-macro/README.md). The macro converts the stubs into live Zotero field codes, then **Zotero > Refresh** applies the final CSL style.
 
 ## Prerequisites
 
@@ -272,14 +259,14 @@ Claude (with zotero-mcp)
 .docx file with stubs like {{CITE:4XD6XSLU|lib=user:1234567|p=42}}
     |
     v
-Open in Word, run "Process Citation Stubs" macro (Alt+F8)
-    |  The macro calls Zotero's local API for each stub,
-    |  builds field codes, and inserts them as live fields
+Claude runs zotero_process_docx (fire-and-forget)
+    |  Edits the .docx XML directly: fetches item data from Zotero,
+    |  builds the 5-part field code structure Zotero expects
     v
 .docx with live Zotero field codes
     |
     v
-Click Zotero > Refresh in Word
+Open in Word, click Zotero > Refresh
     |  Zotero formats all citations per your chosen CSL style,
     |  generates the bibliography, and takes ownership
     v
@@ -305,26 +292,12 @@ and included in Zotero's bibliography management
 
 2. **Save as .docx** (Claude or you can do this).
 
-3. **Open the .docx in Word** and run the macro:
-   - Press **Alt+F8**
-   - Select **ProcessCitationStubs**
-   - Click **Run**
-   - The macro replaces each stub with a Zotero field code (takes a few seconds)
+3. **Ask Claude to process the file** -- it calls `zotero_process_docx` which converts all stubs into Zotero field codes directly in the .docx. No macros or manual steps needed.
 
-4. **Click Zotero > Refresh** in the Word toolbar. Zotero formats everything:
+4. **Open the processed .docx in Word** and click **Zotero > Refresh**. Zotero formats everything:
    - `{{CITE:4XD6XSLU|lib=user:1234567|p=42}}` becomes `(Brandom, 2019, p. 42)`
    - The bibliography appears at the end with all cited works
    - You can now change citation styles, add references, etc. through Zotero as usual
-
-### Installing the Word macro
-
-See [`word-macro/README.md`](./word-macro/README.md) for installation instructions. In short:
-
-1. Press **Alt+F11** in Word (opens VBA Editor)
-2. Right-click **Normal** > **Import File...** > select `ProcessCitationStubs.bas`
-3. Optionally self-sign the macro for security (Tools > Digital Signature)
-
-The macro requires Zotero desktop to be running (it calls the local API on port 23119).
 
 ### Anti-hallucination guardrail
 
@@ -390,6 +363,7 @@ zotero-mcp/
 │   ├── index.ts             # MCP server entry point, tool definitions
 │   ├── zotero-client.ts     # Zotero API client (local + web)
 │   ├── citation-stubs.ts    # .docx stub generation + style validation
+│   ├── docx-processor.ts   # Post-processes .docx to inject Zotero field codes
 │   ├── formatter.ts         # Citation formatting (citeproc + fallback)
 │   ├── citation-engine.ts   # citeproc-js wrapper
 │   ├── html-utils.ts        # HTML-to-Markdown converter
@@ -398,8 +372,6 @@ zotero-mcp/
 │   └── csl/                 # Bundled CSL style and locale data
 │       ├── chicago-author-date.ts
 │       └── locales-en-US.ts
-├── docs/                    # Project notes and diagnostic writeups
-├── word-macro/              # VBA macro for converting citation stubs in Word
 ├── tests/                   # Vitest test suite
 ├── dist/                    # Compiled output (after npm run build)
 ├── package.json
@@ -414,4 +386,4 @@ zotero-mcp/
 - [x] ~~Attachment access~~ — `zotero_get_attachments` tool
 - [x] ~~Group libraries~~ — `ZOTERO_LIBRARY_TYPE=group` + `ZOTERO_GROUP_ID`
 - [x] ~~In-memory cache~~ — 30-minute TTL for item lookups
-- [x] ~~Word integration path~~ — `zotero_cite_stub` + `word-macro/ProcessCitationStubs.bas`
+- [x] ~~Word integration path~~ — `zotero_cite_stub` + `zotero_process_docx` (direct .docx XML injection)
