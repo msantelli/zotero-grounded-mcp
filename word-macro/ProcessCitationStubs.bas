@@ -15,11 +15,14 @@ Attribute VB_Name = "ZoteroCiteStubs"
 
 Option Explicit
 
-' Zotero local API base URL
-Private Const ZOTERO_API As String = "http://localhost:23119/api/users/0"
+' Zotero local API base URLs
+Private Const ZOTERO_API_USER As String = "http://localhost:23119/api/users/0"
+Private Const ZOTERO_API_GROUP_PREFIX As String = "http://localhost:23119/api/groups/"
+Private Const DEFAULT_STYLE_URL As String = "http://www.zotero.org/styles/apa"
 
 ' Cached user ID (fetched once per run)
 Private m_userId As String
+Private m_documentStyleUrl As String
 
 '----------------------------------------------------------------
 ' Main entry point — call this from the Word toolbar
@@ -29,12 +32,10 @@ Public Sub ProcessCitationStubs()
 
     Application.ScreenUpdating = False
 
-    ' Get user ID from first item
+    ' Best-effort user ID lookup for personal-library and legacy stubs.
+    ' Group-library stubs carry their own library context.
     m_userId = GetZoteroUserId()
-    If m_userId = "" Then
-        MsgBox "Could not connect to Zotero. Is the desktop app running?", vbCritical
-        GoTo Cleanup
-    End If
+    m_documentStyleUrl = ""
 
     ' Process bibliography stubs first (so citation processing doesn't shift positions)
     ProcessBibliographyStubs
@@ -64,7 +65,7 @@ End Sub
 '----------------------------------------------------------------
 Private Function GetZoteroUserId() As String
     Dim json As String
-    json = HttpGet(ZOTERO_API & "/items?format=json&limit=1")
+    json = HttpGet(ZOTERO_API_USER & "/items?format=json&limit=1")
     If json = "" Then
         GetZoteroUserId = ""
         Exit Function
@@ -136,17 +137,20 @@ Private Function ProcessCiteStubs() As Long
         Dim prefix As String: prefix = ""
         Dim suffix As String: suffix = ""
         Dim suppressAuthor As Boolean: suppressAuthor = False
+        Dim librarySpec As String: librarySpec = ""
 
         Dim i As Long
         For i = 1 To UBound(parts)
             Dim opt As String
             opt = Trim(parts(i))
             If Left(opt, 2) = "p=" Then
-                locator = Mid(opt, 3)
+                locator = UrlDecode(Mid(opt, 3))
             ElseIf Left(opt, 7) = "prefix=" Then
-                prefix = Mid(opt, 8)
+                prefix = UrlDecode(Mid(opt, 8))
             ElseIf Left(opt, 7) = "suffix=" Then
-                suffix = Mid(opt, 8)
+                suffix = UrlDecode(Mid(opt, 8))
+            ElseIf Left(opt, 4) = "lib=" Then
+                librarySpec = UrlDecode(Mid(opt, 5))
             ElseIf opt = "suppress-author" Then
                 suppressAuthor = True
             End If
@@ -158,7 +162,7 @@ Private Function ProcessCiteStubs() As Long
 
         ' Build the field code
         Dim fieldCode As String
-        fieldCode = BuildCitationFieldCode(keys, locator, prefix, suffix, suppressAuthor)
+        fieldCode = BuildCitationFieldCode(keys, locator, prefix, suffix, suppressAuthor, librarySpec)
 
         If fieldCode <> "" Then
             ' Replace the stub with a field
@@ -188,7 +192,8 @@ Private Function BuildCitationFieldCode( _
     locator As String, _
     prefix As String, _
     suffix As String, _
-    suppressAuthor As Boolean _
+    suppressAuthor As Boolean, _
+    librarySpec As String _
 ) As String
 
     ' Generate citation ID (8 random alphanumeric chars)
@@ -200,6 +205,12 @@ Private Function BuildCitationFieldCode( _
     citItems = ""
     Dim displayParts As String
     displayParts = ""
+    Dim normalizedLibrarySpec As String
+    normalizedLibrarySpec = NormalizeLibrarySpec(librarySpec)
+    If normalizedLibrarySpec = "" Then
+        BuildCitationFieldCode = ""
+        Exit Function
+    End If
 
     Dim i As Long
     For i = 0 To UBound(keys)
@@ -208,7 +219,7 @@ Private Function BuildCitationFieldCode( _
 
         ' Fetch item from Zotero API
         Dim itemJson As String
-        itemJson = HttpGet(ZOTERO_API & "/items/" & key & "?format=json&include=data,csljson")
+        itemJson = HttpGet(ApiBaseForLibrarySpec(normalizedLibrarySpec) & "/items/" & key & "?format=json&include=data,csljson")
         If itemJson = "" Then
             BuildCitationFieldCode = ""
             Exit Function
@@ -224,7 +235,7 @@ Private Function BuildCitationFieldCode( _
 
         ' Build URI
         Dim uri As String
-        uri = "http://zotero.org/users/" & m_userId & "/items/" & key
+        uri = ZoteroUriForLibrarySpec(normalizedLibrarySpec, key)
 
         ' Build display text
         Dim display As String
@@ -287,6 +298,33 @@ Private Sub ProcessBibliographyStubs()
             If Not .Execute Then Exit Do
         End With
 
+        Dim stubText As String
+        stubText = rng.Text
+        stubText = Mid(stubText, 3, Len(stubText) - 4) ' removes {{ and }}
+        stubText = Mid(stubText, 13) ' removes BIBLIOGRAPHY
+
+        Dim parts() As String
+        parts = Split(stubText, "|")
+
+        Dim i As Long
+        For i = 1 To UBound(parts)
+            Dim opt As String
+            opt = Trim(parts(i))
+            If Left(opt, 6) = "style=" Then
+                Dim styleUrl As String
+                styleUrl = StyleNameToUrl(UrlDecode(Mid(opt, 7)))
+                If styleUrl = "" Then
+                    Err.Raise vbObjectError + 1000, "ProcessCitationStubs", _
+                        "Unsupported bibliography style in stub: " & Mid(opt, 7)
+                End If
+                If m_documentStyleUrl <> "" And m_documentStyleUrl <> styleUrl Then
+                    Err.Raise vbObjectError + 1001, "ProcessCitationStubs", _
+                        "Conflicting bibliography styles found in document stubs."
+                End If
+                m_documentStyleUrl = styleUrl
+            End If
+        Next i
+
         rng.Select
         Dim fld As Field
         Set fld = ActiveDocument.Fields.Add( _
@@ -302,9 +340,13 @@ End Sub
 '----------------------------------------------------------------
 Private Sub SetZoteroPreferences()
     Dim prefData As String
+    Dim styleUrl As String
+    styleUrl = m_documentStyleUrl
+    If styleUrl = "" Then styleUrl = DEFAULT_STYLE_URL
+
     prefData = "<data data-version=""3"" zotero-version=""7.0.0"">" & _
                "<session id=""" & GenerateCitationId() & """/>" & _
-               "<style id=""http://www.zotero.org/styles/apa"" locale=""en-US"" hasBibliography=""1"" bibliographyStyleHasBeenSet=""0""/>" & _
+               "<style id=""" & styleUrl & """ locale=""en-US"" hasBibliography=""1"" bibliographyStyleHasBeenSet=""0""/>" & _
                "<prefs>" & _
                "<pref name=""fieldType"" value=""Field""/>" & _
                "<pref name=""automaticJournalAbbreviations"" value=""true""/>" & _
@@ -344,6 +386,61 @@ Private Function HttpGet(url As String) As String
 
 ErrHandler:
     HttpGet = ""
+End Function
+
+'----------------------------------------------------------------
+' Fill in missing library context for legacy stubs
+'----------------------------------------------------------------
+Private Function NormalizeLibrarySpec(librarySpec As String) As String
+    If librarySpec <> "" Then
+        NormalizeLibrarySpec = librarySpec
+    ElseIf m_userId <> "" Then
+        NormalizeLibrarySpec = "user:" & m_userId
+    Else
+        NormalizeLibrarySpec = ""
+    End If
+End Function
+
+'----------------------------------------------------------------
+' Get the correct local API base URL for a library
+'----------------------------------------------------------------
+Private Function ApiBaseForLibrarySpec(librarySpec As String) As String
+    If Left$(librarySpec, 6) = "group:" Then
+        ApiBaseForLibrarySpec = ZOTERO_API_GROUP_PREFIX & Mid$(librarySpec, 7)
+    Else
+        ApiBaseForLibrarySpec = ZOTERO_API_USER
+    End If
+End Function
+
+'----------------------------------------------------------------
+' Get the canonical Zotero item URI for a library
+'----------------------------------------------------------------
+Private Function ZoteroUriForLibrarySpec(librarySpec As String, key As String) As String
+    If Left$(librarySpec, 6) = "group:" Then
+        ZoteroUriForLibrarySpec = "http://zotero.org/groups/" & Mid$(librarySpec, 7) & "/items/" & key
+    Else
+        ZoteroUriForLibrarySpec = "http://zotero.org/users/" & Mid$(librarySpec, 6) & "/items/" & key
+    End If
+End Function
+
+'----------------------------------------------------------------
+' Map supported style names to Zotero CSL URLs
+'----------------------------------------------------------------
+Private Function StyleNameToUrl(styleName As String) As String
+    Select Case LCase$(styleName)
+        Case "apa"
+            StyleNameToUrl = "http://www.zotero.org/styles/apa"
+        Case "chicago-author-date"
+            StyleNameToUrl = "http://www.zotero.org/styles/chicago-author-date"
+        Case "mla"
+            StyleNameToUrl = "http://www.zotero.org/styles/modern-language-association"
+        Case "ieee"
+            StyleNameToUrl = "http://www.zotero.org/styles/ieee"
+        Case "harvard"
+            StyleNameToUrl = "http://www.zotero.org/styles/harvard-cite-them-right"
+        Case Else
+            StyleNameToUrl = ""
+    End Select
 End Function
 
 '----------------------------------------------------------------
@@ -585,4 +682,27 @@ Private Function JsonEscape(s As String) As String
     result = Replace(result, vbLf, "\n")
     result = Replace(result, vbTab, "\t")
     JsonEscape = result
+End Function
+
+'----------------------------------------------------------------
+' Decode percent-encoded stub values
+'----------------------------------------------------------------
+Private Function UrlDecode(value As String) As String
+    Dim result As String: result = ""
+    Dim i As Long: i = 1
+
+    Do While i <= Len(value)
+        Dim ch As String
+        ch = Mid$(value, i, 1)
+
+        If ch = "%" And i + 2 <= Len(value) Then
+            result = result & Chr$(CLng("&H" & Mid$(value, i + 1, 2)))
+            i = i + 3
+        Else
+            result = result & ch
+            i = i + 1
+        End If
+    Loop
+
+    UrlDecode = result
 End Function

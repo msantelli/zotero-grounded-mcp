@@ -23,6 +23,20 @@ You don't interact with this server directly. Instead, you configure Claude Code
 
 Citation formatting uses **citeproc-js** with the Chicago Author-Date style (18th ed.) by default. The `zotero_cite` and `zotero_bibliography` tools accept an optional `style` parameter.
 
+## Using `.docx` citation stubs
+
+For Word documents, use `zotero_cite_stub` instead of pasting plain-text citations by hand. The tool validates every Zotero key and returns stubs that carry library context for either personal or group libraries.
+
+Typical output looks like:
+
+```text
+{{CITE:ABCD1234|lib=user:1234567}}
+{{CITE:ABCD1234;EFGH5678|lib=group:98765|p=42}}
+{{BIBLIOGRAPHY|lib=user:1234567|style=chicago-author-date}}
+```
+
+After saving the document as `.docx`, open it in Word and run the macro in [`word-macro/`](./word-macro/README.md). The macro converts the stubs into live Zotero field codes, then **Zotero > Refresh** applies the final CSL style.
+
 ## Prerequisites
 
 - **Node.js 18+** and **npm** -- check with `node -v` and `npm -v`
@@ -247,6 +261,7 @@ Once connected, you can ask Claude things like:
 - *"Get the full citation for item key ABCD1234"* -- uses `zotero_cite`
 - *"Build a bibliography from these 5 items"* -- uses `zotero_bibliography`
 - *"What are my notes on this paper?"* -- uses `zotero_get_notes`
+- *"Generate .docx citation stubs for these Zotero keys and include a Chicago bibliography"* -- uses `zotero_cite_stub`
 - *"Write a literature review paragraph about pragmatism using sources from my library"* -- Claude searches, reads abstracts, and cites accurately
 
 ## Privacy and security
@@ -293,13 +308,17 @@ zotero-mcp/
 ├── src/
 │   ├── index.ts             # MCP server entry point, tool definitions
 │   ├── zotero-client.ts     # Zotero API client (local + web)
+│   ├── citation-stubs.ts    # .docx stub generation + style validation
 │   ├── formatter.ts         # Citation formatting (citeproc + fallback)
 │   ├── citation-engine.ts   # citeproc-js wrapper
 │   ├── html-utils.ts        # HTML-to-Markdown converter
 │   ├── citeproc.d.ts        # Type declarations for citeproc
+│   ├── server-version.ts    # package.json version bridge for MCP metadata
 │   └── csl/                 # Bundled CSL style and locale data
 │       ├── chicago-author-date.ts
 │       └── locales-en-US.ts
+├── docs/                    # Project notes and diagnostic writeups
+├── word-macro/              # VBA macro for converting citation stubs in Word
 ├── tests/                   # Vitest test suite
 ├── dist/                    # Compiled output (after npm run build)
 ├── package.json
@@ -314,3 +333,4 @@ zotero-mcp/
 - [x] ~~Attachment access~~ — `zotero_get_attachments` tool
 - [x] ~~Group libraries~~ — `ZOTERO_LIBRARY_TYPE=group` + `ZOTERO_GROUP_ID`
 - [x] ~~In-memory cache~~ — 30-minute TTL for item lookups
+- [x] ~~Word integration path~~ — `zotero_cite_stub` + `word-macro/ProcessCitationStubs.bas`

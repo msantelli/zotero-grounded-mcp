@@ -31,6 +31,13 @@ import {
   formatBibliography,
 } from "./formatter.js";
 import { htmlToMarkdown } from "./html-utils.js";
+import {
+  type SupportedBibliographyStyle,
+  buildBibliographyStub,
+  buildCitationStub,
+  isSupportedBibliographyStyle,
+} from "./citation-stubs.js";
+import { serverVersion } from "./server-version.js";
 
 // --- Config from env ---
 const mode = (process.env.ZOTERO_MODE ?? "local") as "local" | "web";
@@ -80,7 +87,7 @@ function summariseItem(item: ZoteroItem): string {
 
 const server = new McpServer({
   name: "zotero-mcp",
-  version: "0.1.0",
+  version: serverVersion,
 });
 
 // ──────────────────────────────────────────
@@ -406,12 +413,12 @@ server.tool(
   `Generate validated citation stubs for use in documents. Each stub references a real Zotero item — if any key doesn't exist, the tool returns an error. Use these stubs in .docx documents; the user runs a Word macro to convert them into live Zotero citations.
 
 Stub format:
-  {{CITE:KEY}} — simple citation
-  {{CITE:KEY|p=42}} — with page locator
-  {{CITE:KEY1;KEY2}} — grouped (multiple sources, one claim)
-  {{CITE:KEY|prefix=see |suffix=, emphasis added}} — with prefix/suffix
-  {{CITE:KEY|suppress-author}} — for narrative citations like "Brandom (2019) argues..."
-  {{BIBLIOGRAPHY}} — bibliography placeholder (place at end of document)
+  {{CITE:KEY|lib=user:12345}} — simple citation
+  {{CITE:KEY|lib=user:12345|p=42}} — with page locator
+  {{CITE:KEY1;KEY2|lib=group:67890}} — grouped (multiple sources, one claim)
+  {{CITE:KEY|lib=user:12345|prefix=see%20|suffix=%2C%20emphasis%20added}} — with prefix/suffix
+  {{CITE:KEY|lib=user:12345|suppress-author}} — for narrative citations like "Brandom (2019) argues..."
+  {{BIBLIOGRAPHY|lib=user:12345|style=apa}} — bibliography placeholder with document style
 
 IMPORTANT: Always call this tool to get stubs instead of writing them by hand. This validates that every key exists in the user's Zotero library, preventing hallucinated references.`,
   {
@@ -438,6 +445,36 @@ IMPORTANT: Always call this tool to get stubs instead of writing them by hand. T
   },
   async ({ citations, bibliography, bibliographyStyle }) => {
     try {
+      if (bibliographyStyle && !bibliography) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "Error: bibliographyStyle requires bibliography=true so the Word macro can store the document style in the bibliography stub.",
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      if (bibliographyStyle && !isSupportedBibliographyStyle(bibliographyStyle)) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                "Error: Unsupported bibliographyStyle. Supported styles: apa, chicago-author-date, mla, ieee, harvard.",
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      const supportedBibliographyStyle: SupportedBibliographyStyle | undefined =
+        bibliographyStyle && isSupportedBibliographyStyle(bibliographyStyle)
+          ? bibliographyStyle
+          : undefined;
+
       // Validate all keys exist
       const allKeys = [...new Set(citations.flatMap((c) => c.keys))];
       const items = await client.getItems(allKeys);
@@ -456,24 +493,19 @@ IMPORTANT: Always call this tool to get stubs instead of writing them by hand. T
         };
       }
 
+      const libraryContext = await client.getLibraryContext();
+      const itemMap = new Map(items.map((item) => [item.key, item]));
+
       // Build stubs
-      const stubs: string[] = [];
-      for (const cit of citations) {
-        const keyPart = cit.keys.join(";");
-        const opts: string[] = [];
-        if (cit.locator) opts.push(`p=${cit.locator}`);
-        if (cit.prefix) opts.push(`prefix=${cit.prefix}`);
-        if (cit.suffix) opts.push(`suffix=${cit.suffix}`);
-        if (cit.suppressAuthor) opts.push("suppress-author");
-        const optsPart = opts.length > 0 ? "|" + opts.join("|") : "";
-        stubs.push(`{{CITE:${keyPart}${optsPart}}}`);
-      }
+      const stubs = citations.map((citation) =>
+        buildCitationStub(citation, libraryContext)
+      );
 
       // Build a readable summary for each citation
       const lines: string[] = ["## Citation Stubs\n"];
       for (let i = 0; i < citations.length; i++) {
         const cit = citations[i];
-        const citItems = cit.keys.map((k) => items.find((it) => it.key === k)!);
+        const citItems = cit.keys.map((key) => itemMap.get(key)!);
         const desc = citItems
           .map((it) => {
             const author = it.data.creators?.[0]?.lastName ?? "Unknown";
@@ -485,11 +517,11 @@ IMPORTANT: Always call this tool to get stubs instead of writing them by hand. T
       }
 
       if (bibliography) {
-        const bibStub = bibliographyStyle
-          ? `{{BIBLIOGRAPHY|style=${bibliographyStyle}}}`
-          : "{{BIBLIOGRAPHY}}";
+        const bibStub = buildBibliographyStub(
+          libraryContext,
+          supportedBibliographyStyle
+        );
         lines.push(`\n**Bibliography**: \`${bibStub}\``);
-        stubs.push(bibStub);
       }
 
       lines.push("\n---\n");

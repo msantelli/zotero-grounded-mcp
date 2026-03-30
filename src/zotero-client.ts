@@ -74,6 +74,10 @@ export interface ZoteroCollection {
   };
 }
 
+export type ZoteroLibraryContext =
+  | { type: "user"; userId: string }
+  | { type: "group"; groupId: string };
+
 export class ZoteroClient {
   private config: ZoteroConfig;
   private baseUrl: string;
@@ -393,6 +397,20 @@ export class ZoteroClient {
     if (!id) throw new Error("Could not determine Zotero user ID from library items");
     this.cachedUserId = String(id);
     return this.cachedUserId;
+  }
+
+  /**
+   * Get the active library context for downstream tools.
+   */
+  async getLibraryContext(): Promise<ZoteroLibraryContext> {
+    if (this.config.libraryType === "group") {
+      if (!this.config.groupId) {
+        throw new Error("Group library mode requires groupId");
+      }
+      return { type: "group", groupId: this.config.groupId };
+    }
+
+    return { type: "user", userId: await this.getUserId() };
   }
 
   /**

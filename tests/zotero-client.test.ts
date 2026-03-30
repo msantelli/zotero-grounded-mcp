@@ -1,6 +1,7 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ZoteroClient } from "../src/zotero-client.js";
 import {
+  book,
   journalArticle,
   sampleCollections,
   noteChild,
@@ -91,6 +92,19 @@ describe("ZoteroClient — local mode", () => {
     });
   });
 
+  describe("getItems", () => {
+    it("returns items in the same order as the requested keys", async () => {
+      mockFetch
+        .mockResolvedValueOnce(mockResponse(journalArticle))
+        .mockResolvedValueOnce(mockResponse(book));
+
+      await client.getItem("ABCD1234");
+      const items = await client.getItems(["EFGH5678", "ABCD1234"]);
+
+      expect(items.map((item) => item.key)).toEqual(["EFGH5678", "ABCD1234"]);
+    });
+  });
+
   describe("listCollections", () => {
     it("fetches collections", async () => {
       mockFetch.mockResolvedValueOnce(
@@ -175,6 +189,19 @@ describe("ZoteroClient — local mode", () => {
       );
     });
   });
+
+  describe("library context", () => {
+    it("gets the local user id from an item's library field", async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse([{ library: { id: 1234567 } }])
+      );
+
+      const context = await client.getLibraryContext();
+
+      expect(context).toEqual({ type: "user", userId: "1234567" });
+      expect(mockFetch).toHaveBeenCalledOnce();
+    });
+  });
 });
 
 describe("ZoteroClient — web mode", () => {
@@ -255,5 +282,18 @@ describe("ZoteroClient — group library", () => {
     await client.searchItems("test");
     const url = mockFetch.mock.calls[0][0] as string;
     expect(url).toContain("https://api.zotero.org/groups/98765/items");
+  });
+
+  it("returns group library context without fetching", async () => {
+    const client = new ZoteroClient({
+      mode: "local",
+      libraryType: "group",
+      groupId: "98765",
+    });
+
+    const context = await client.getLibraryContext();
+
+    expect(context).toEqual({ type: "group", groupId: "98765" });
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 });
