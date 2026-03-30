@@ -11,6 +11,7 @@
  *   - zotero_get_notes     Get notes and annotations attached to an item
  *   - zotero_get_attachments  Get PDF and file attachments for an item
  *   - zotero_cite_stub        Generate validated citation stubs for .docx documents
+ *   - zotero_process_docx     Convert stubs in a .docx to live Zotero field codes
  *
  * Configuration is via environment variables:
  *   ZOTERO_MODE          "local" (default) or "web"
@@ -31,6 +32,7 @@ import {
   formatBibliography,
 } from "./formatter.js";
 import { htmlToMarkdown } from "./html-utils.js";
+import { processDocxStubs, keyToNumericId } from "./docx-processor.js";
 import {
   type SupportedBibliographyStyle,
   buildBibliographyStub,
@@ -531,6 +533,87 @@ IMPORTANT: Always call this tool to get stubs instead of writing them by hand. T
     } catch (error) {
       return {
         content: [{ type: "text", text: `Error generating stubs: ${error}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ──────────────────────────────────────────
+// Tool: zotero_process_docx
+// ──────────────────────────────────────────
+server.tool(
+  "zotero_process_docx",
+  `Process a .docx file to convert {{CITE:...}} stubs into live Zotero field codes. This directly edits the .docx XML to produce the exact field structure Zotero expects. After processing, open the file in Word and click Zotero > Refresh.
+
+Give this tool the file path and it does everything: fetches item data from Zotero, builds field codes, writes the output. Fire and forget.`,
+  {
+    inputPath: z.string().describe("Path to the .docx file with citation stubs"),
+    outputPath: z
+      .string()
+      .optional()
+      .describe("Output path (defaults to overwriting the input file)"),
+  },
+  async ({ inputPath, outputPath }) => {
+    try {
+      const libCtx = await client.getLibraryContext();
+
+      const result = await processDocxStubs(
+        inputPath,
+        outputPath ?? inputPath,
+        async (key: string, librarySpec: string) => {
+          // Determine which API base to use
+          const spec = librarySpec || (
+            libCtx.type === "group"
+              ? `group:${libCtx.groupId}`
+              : `user:${libCtx.userId}`
+          );
+
+          const item = await client.getItem(key);
+          const cslJson = item.csljson ?? {};
+
+          // Fix id to numeric
+          const numericId = keyToNumericId(key);
+          const cslWithFixedId = { ...cslJson, id: numericId };
+
+          // Build URI
+          const uriPrefix = spec.startsWith("group:")
+            ? `groups/${spec.slice(6)}`
+            : `users/${spec.slice(5)}`;
+          const uri = `http://zotero.org/${uriPrefix}/items/${key}`;
+
+          // Build display text
+          const authors = (cslJson as Record<string, unknown>).author as
+            | Array<{ family?: string }>
+            | undefined;
+          const issued = (cslJson as Record<string, unknown>).issued as
+            | { "date-parts"?: unknown[][] }
+            | undefined;
+          const year = issued?.["date-parts"]?.[0]?.[0] ?? "n.d.";
+          const authorName = authors?.[0]?.family ?? "Unknown";
+          const displayText = `(${authorName}, ${year})`;
+
+          return {
+            cslJson: JSON.stringify(cslWithFixedId),
+            numericId,
+            uri,
+            displayText,
+          };
+        }
+      );
+
+      const out = outputPath ?? inputPath;
+      const parts: string[] = [
+        `Processed ${result.citations} citation(s)`,
+      ];
+      if (result.bibliography) parts.push("+ bibliography");
+      parts.push(`→ ${out}`);
+      parts.push("\nOpen in Word and click Zotero > Refresh.");
+
+      return { content: [{ type: "text", text: parts.join(" ") }] };
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: `Error processing .docx: ${error}` }],
         isError: true,
       };
     }
