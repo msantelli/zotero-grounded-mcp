@@ -155,45 +155,24 @@ Private Function ProcessCiteStubs() As Long
 End Function
 
 '----------------------------------------------------------------
-' Insert a Zotero field code with proper 5-part structure:
-' begin → instrText → separate → display text → end
+' Insert a Zotero field code.
 '
-' Uses Fields.Add to create the field, then overwrites the code
-' text for compactness. To force creation of the separate+result
-' structure (which Fields.Add doesn't do for ADDIN fields), we
-' toggle field codes off, which forces Word to create a result
-' range, then set the result text.
+' Uses Fields.Add which creates a compact single instrText element.
+' Do NOT overwrite Field.Code.Text afterward — that causes Word to
+' re-fragment the JSON across hundreds of runs.
+'
+' Note: Fields.Add for ADDIN fields does not create a separate
+' element or result/display text. Zotero's Refresh will add these
+' on first run. The "dontUpdate" property in the JSON tells Zotero
+' to preserve our display text hint in formattedCitation.
 '----------------------------------------------------------------
 Private Sub InsertZoteroField(rng As Range, instrText As String, displayText As String)
-    ' Step 1: Create the field
     Dim fld As Field
     Set fld = ActiveDocument.Fields.Add( _
         Range:=rng, _
         Type:=wdFieldEmpty, _
         Text:=instrText, _
         PreserveFormatting:=False)
-
-    ' Step 2: Compact the instrText (remove Word's tab reformatting)
-    fld.Code.Text = " " & instrText & " "
-
-    ' Step 3: Show field results (not codes) to force Word to
-    ' create the separate element and result range
-    fld.ShowCodes = False
-
-    ' Step 4: Select the field and collapse to the result area,
-    ' then type the display text
-    fld.Select
-    With Selection
-        ' Collapse to end of the field result area
-        .Collapse Direction:=wdCollapseEnd
-        ' Move back inside the field (before the end mark)
-        .MoveLeft Unit:=wdCharacter, count:=1
-        ' Type the display text
-        .TypeText Text:=displayText
-    End With
-
-    ' Step 5: Lock so Word doesn't clear result before Zotero Refresh
-    fld.Locked = True
 End Sub
 
 '----------------------------------------------------------------
@@ -276,7 +255,7 @@ Private Function BuildCitationFieldCode( _
     ' Build the complete CSL_CITATION JSON (compact, single line)
     Dim citation As String
     citation = "{""citationID"":""" & citId & """"
-    citation = citation & ",""properties"":{""formattedCitation"":""" & JsonEscape(fullDisplay) & """,""plainCitation"":""" & JsonEscape(fullDisplay) & """,""noteIndex"":0}"
+    citation = citation & ",""properties"":{""formattedCitation"":""" & JsonEscape(fullDisplay) & """,""plainCitation"":""" & JsonEscape(fullDisplay) & """,""dontUpdate"":true,""noteIndex"":0}"
     citation = citation & ",""citationItems"":[" & citItems & "]"
     citation = citation & ",""schema"":""https://github.com/citation-style-language/schema/raw/master/csl-citation.json""}"
 
@@ -538,23 +517,24 @@ End Function
 ' [["2025"]] → [[2025]], [["2025","3","15"]] → [[2025,3,15]]
 '----------------------------------------------------------------
 Private Function FixDateParts(cslJson As String) As String
-    ' Simple approach: find patterns like "NNNN" inside date-parts arrays
-    ' and strip the quotes. Works by scanning for [[ after "date-parts"
-    ' and replacing quoted numbers with bare numbers.
+    ' Replace quoted numbers inside date-parts arrays:
+    '   [["2025"]] → [[2025]]
+    '   [["2025","3","15"]] → [[2025,3,15]]
+    '
+    ' Uses RegExp to find all "NNNN" patterns within the date-parts
+    ' region and strip the quotes.
     Dim result As String: result = cslJson
 
-    ' Use RegExp for reliable pattern matching
     Dim re As Object
     Set re = CreateObject("VBScript.RegExp")
     re.Global = True
-    re.Pattern = "\[""(\d+)""\]"
+    ' Match a quoted number: "digits"
+    re.Pattern = """(\d+)"""
 
-    ' Only apply within the date-parts region
     Dim dpPos As Long
     dpPos = InStr(result, """date-parts""")
 
     Do While dpPos > 0
-        ' Find the array start
         Dim arrStart As Long
         arrStart = InStr(dpPos, result, "[[")
         If arrStart = 0 Then Exit Do
@@ -563,18 +543,16 @@ Private Function FixDateParts(cslJson As String) As String
         arrEnd = InStr(arrStart, result, "]]")
         If arrEnd = 0 Then Exit Do
 
-        ' Extract the full date-parts value including brackets
+        ' Extract the inner array content between [[ and ]]
         Dim dateRegion As String
         dateRegion = Mid(result, arrStart, arrEnd - arrStart + 2)
 
-        ' Replace ["NNNN"] with [NNNN] within this region
+        ' Replace "NNNN" with NNNN (strip quotes from numbers)
         Dim fixedRegion As String
-        fixedRegion = re.Replace(dateRegion, "[$1]")
+        fixedRegion = re.Replace(dateRegion, "$1")
 
-        ' Put it back
         result = Left(result, arrStart - 1) & fixedRegion & Mid(result, arrEnd + 2)
 
-        ' Look for more
         dpPos = InStr(arrStart + Len(fixedRegion), result, """date-parts""")
     Loop
 
