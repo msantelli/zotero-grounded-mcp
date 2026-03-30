@@ -155,24 +155,34 @@ Private Function ProcessCiteStubs() As Long
 End Function
 
 '----------------------------------------------------------------
-' Insert a Zotero field code.
+' Insert a Zotero field code with the 5-part structure:
+' begin → instrText → separate → display text → end
 '
-' Uses Fields.Add which creates a compact single instrText element.
-' Do NOT overwrite Field.Code.Text afterward — that causes Word to
-' re-fragment the JSON across hundreds of runs.
-'
-' Note: Fields.Add for ADDIN fields does not create a separate
-' element or result/display text. Zotero's Refresh will add these
-' on first run. The "dontUpdate" property in the JSON tells Zotero
-' to preserve our display text hint in formattedCitation.
+' Fields.Add creates begin + instrText + end (no separate/result).
+' We then force-update the field to create the separate element,
+' and insert the display text into the result range.
 '----------------------------------------------------------------
 Private Sub InsertZoteroField(rng As Range, instrText As String, displayText As String)
+    ' Step 1: Create the field (produces begin + instrText + end)
     Dim fld As Field
     Set fld = ActiveDocument.Fields.Add( _
         Range:=rng, _
         Type:=wdFieldEmpty, _
         Text:=instrText, _
         PreserveFormatting:=False)
+
+    ' Step 2: Update the field to force Word to create the
+    ' separate element and result range
+    fld.Update
+
+    ' Step 3: Set the result text (display text the reader sees)
+    ' After Update, fld.Result should be a valid range
+    If Not fld.result Is Nothing Then
+        fld.result.Text = displayText
+    End If
+
+    ' Step 4: Lock to prevent accidental updates before Zotero Refresh
+    fld.Locked = True
 End Sub
 
 '----------------------------------------------------------------
@@ -226,9 +236,8 @@ Private Function BuildCitationFieldCode( _
         Dim display As String
         display = ExtractDisplayText(cslJson)
 
-        ' Fix itemData: numeric id and numeric date-parts
+        ' Fix itemData.id to numeric (Zotero matches by URI, not id)
         cslJson = FixItemDataId(cslJson, numId)
-        cslJson = FixDateParts(cslJson)
 
         ' Build citation item JSON (compact, single line)
         Dim citItem As String
@@ -255,7 +264,7 @@ Private Function BuildCitationFieldCode( _
     ' Build the complete CSL_CITATION JSON (compact, single line)
     Dim citation As String
     citation = "{""citationID"":""" & citId & """"
-    citation = citation & ",""properties"":{""formattedCitation"":""" & JsonEscape(fullDisplay) & """,""plainCitation"":""" & JsonEscape(fullDisplay) & """,""dontUpdate"":true,""noteIndex"":0}"
+    citation = citation & ",""properties"":{""formattedCitation"":""" & JsonEscape(fullDisplay) & """,""plainCitation"":""" & JsonEscape(fullDisplay) & """,""noteIndex"":0}"
     citation = citation & ",""citationItems"":[" & citItems & "]"
     citation = citation & ",""schema"":""https://github.com/citation-style-language/schema/raw/master/csl-citation.json""}"
 
