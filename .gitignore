@@ -1,6 +1,7 @@
 # Auxiliary Files
 .claude
 CLAUDE.md
+AGENTS.md
 
 # Dependencies
 node_modules/

@@ -375,16 +375,22 @@ In other words, this MCP is an on-ramp into Zotero's existing document model, no
 
 ### Anti-hallucination guardrail
 
-The `zotero_cite_stub` tool **validates every item key** against your Zotero library before generating stubs. If the assistant tries to cite an item that doesn't exist, the tool returns an error:
+The `zotero_cite_stub` tool **validates every item key for the stubs it generates** against your Zotero library. If the assistant tries to generate a stub for an item that doesn't exist, the tool returns an error:
 
 ```
 Error: The following Zotero item keys were not found in the library: FAKEKEY99.
 Use zotero_search to find valid keys.
 ```
 
-This means every citation in the final document is guaranteed to reference a real item in your library.
+This does **not** mean the entire document is automatically fabrication-proof. An assistant could still:
 
-In practice, that makes Zotero the reference authority for the workflow. The assistant can help search, match, and structure the draft, but it cannot quietly fabricate bibliography entries outside your library and pass them off as verified references. You should still verify that the selected Zotero items are relevant to your argument, but the system is designed so that verified citations come from your actual library rather than from invented references.
+- write fake references as plain text,
+- hand-write a bogus stub without calling the tool,
+- or add claims with no Zotero-backed citation at all.
+
+What the workflow does guarantee is narrower and more useful: citations that go through the validated `zotero_cite_stub` -> `zotero_process_docx` -> Zotero `Refresh` path are grounded in real Zotero items. Fake references outside that path may still appear as ordinary text, but they will not be taken over as Zotero-managed citations.
+
+In practice, that makes Zotero the reference authority for the managed-citation part of the workflow. You should still review the final document for relevance and for any plain-text references the assistant may have added outside the Zotero-managed path.
 
 ## Other example workflows
 
@@ -462,10 +468,8 @@ zotero-grounded-mcp/
 └── README.md
 ```
 
-## Remaining TODOs
+## License and authorship
 
-- [x] ~~Add more CSL styles~~ — APA, MLA, IEEE, Harvard bundled
-- [x] ~~Attachment access~~ — `zotero_get_attachments` tool
-- [x] ~~Group libraries~~ — `ZOTERO_LIBRARY_TYPE=group` + `ZOTERO_GROUP_ID`
-- [x] ~~In-memory cache~~ — 30-minute TTL for item lookups
-- [x] ~~Word integration path~~ — `zotero_cite_stub` + `zotero_process_docx` (direct .docx XML injection)
+This project is released under the MIT License.
+
+Authored by Mauro Santelli, with development help from Claude Opus 4.6 and Codex 5.4.
