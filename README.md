@@ -384,13 +384,14 @@ Use zotero_search to find valid keys.
 
 This does **not** mean the entire document is automatically fabrication-proof. An assistant could still:
 
+- cite a real item from your library that is not actually relevant to the paragraph,
 - write fake references as plain text,
 - hand-write a bogus stub without calling the tool,
 - or add claims with no Zotero-backed citation at all.
 
 What the workflow does guarantee is narrower and more useful: citations that go through the validated `zotero_cite_stub` -> `zotero_process_docx` -> Zotero `Refresh` path are grounded in real Zotero items. Fake references outside that path may still appear as ordinary text, but they will not be taken over as Zotero-managed citations.
 
-In practice, that makes Zotero the reference authority for the managed-citation part of the workflow. You should still review the final document for relevance and for any plain-text references the assistant may have added outside the Zotero-managed path.
+In practice, every citation that passes through the validated path points to a real item in your library -- it will not be an outright fabrication. But a real reference can still be misapplied. You should review the final document for relevance (does this source actually support this claim?) and for any plain-text references the assistant may have added outside the Zotero-managed path.
 
 ## Other example workflows
 
