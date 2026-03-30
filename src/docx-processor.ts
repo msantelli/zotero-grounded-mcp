@@ -8,11 +8,9 @@
  * expects.
  */
 
-import { readFileSync, writeFileSync, mkdirSync, rmSync, mkdtempSync } from "node:fs";
-import { resolve, join, dirname } from "node:path";
-import { tmpdir } from "node:os";
-import { inflateRawSync } from "node:zlib";
-import { execFileSync } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { inflateRawSync, deflateRawSync } from "node:zlib";
 import {
   bibliographyStyleToUrl,
   isSupportedBibliographyStyle,
@@ -176,26 +174,8 @@ export async function processDocxStubs(
   // Ensure docProps/custom.xml has Zotero prefs
   ensureZoteroPrefs(entries, bibliographyStyleUrl ?? DEFAULT_BIBLIOGRAPHY_STYLE_URL);
 
-  // Write the output using a temp directory + system zip command
-  // (custom ZIP writers produce files Word can't reliably open)
-  const tmpDir = mkdtempSync(join(tmpdir(), "zotero-docx-"));
-  try {
-    for (const entry of entries) {
-      const entryPath = join(tmpDir, entry.name);
-      mkdirSync(dirname(entryPath), { recursive: true });
-      if (!entry.name.endsWith("/")) {
-        writeFileSync(entryPath, entry.data);
-      }
-    }
-    // Remove output file first (zip -r appends if it exists)
-    try { rmSync(absOutput); } catch { /* ok if doesn't exist */ }
-    execFileSync("zip", ["-r", "-X", absOutput, ...entries.map((e) => e.name)], {
-      cwd: tmpDir,
-      stdio: "ignore",
-    });
-  } finally {
-    rmSync(tmpDir, { recursive: true, force: true });
-  }
+  // Write the output as a ZIP archive (pure Node.js, no external tools)
+  writeFileSync(absOutput, writeZip(entries));
 
   return { citations: citationCount, bibliography: hasBibliography };
 }
@@ -357,6 +337,99 @@ export function readZip(data: Buffer): ZipEntry[] {
   }
 
   return entries;
+}
+
+/**
+ * Write ZIP entries into a Buffer. Produces a standard ZIP archive
+ * using DEFLATE compression — no external tools required.
+ */
+export function writeZip(entries: ZipEntry[]): Buffer {
+  const localHeaders: Buffer[] = [];
+  const centralHeaders: Buffer[] = [];
+  let offset = 0;
+
+  for (const entry of entries) {
+    const nameBytes = Buffer.from(entry.name, "utf-8");
+    const isDir = entry.name.endsWith("/");
+    const uncompressed = isDir ? Buffer.alloc(0) : entry.data;
+    const compressed = isDir ? Buffer.alloc(0) : deflateRawSync(uncompressed);
+
+    // Use STORE if deflate didn't shrink the data
+    const useStore = isDir || compressed.length >= uncompressed.length;
+    const method = useStore ? 0 : 8;
+    const fileData = useStore ? uncompressed : compressed;
+
+    const crc = crc32(uncompressed);
+
+    // Local file header (30 bytes + name + file data)
+    const local = Buffer.alloc(30 + nameBytes.length);
+    local.writeUInt32LE(0x04034b50, 0);       // signature
+    local.writeUInt16LE(20, 4);               // version needed
+    local.writeUInt16LE(0, 6);                // flags
+    local.writeUInt16LE(method, 8);           // compression
+    local.writeUInt16LE(0, 10);               // mod time
+    local.writeUInt16LE(0, 12);               // mod date
+    local.writeUInt32LE(crc, 14);             // crc-32
+    local.writeUInt32LE(fileData.length, 18); // compressed size
+    local.writeUInt32LE(uncompressed.length, 22); // uncompressed size
+    local.writeUInt16LE(nameBytes.length, 26);    // name length
+    local.writeUInt16LE(0, 28);               // extra length
+    nameBytes.copy(local, 30);
+
+    localHeaders.push(local, fileData);
+
+    // Central directory header (46 bytes + name)
+    const central = Buffer.alloc(46 + nameBytes.length);
+    central.writeUInt32LE(0x02014b50, 0);         // signature
+    central.writeUInt16LE(20, 4);                 // version made by
+    central.writeUInt16LE(20, 6);                 // version needed
+    central.writeUInt16LE(0, 8);                  // flags
+    central.writeUInt16LE(method, 10);            // compression
+    central.writeUInt16LE(0, 12);                 // mod time
+    central.writeUInt16LE(0, 14);                 // mod date
+    central.writeUInt32LE(crc, 16);               // crc-32
+    central.writeUInt32LE(fileData.length, 20);   // compressed size
+    central.writeUInt32LE(uncompressed.length, 24); // uncompressed size
+    central.writeUInt16LE(nameBytes.length, 28);  // name length
+    central.writeUInt16LE(0, 30);                 // extra length
+    central.writeUInt16LE(0, 32);                 // comment length
+    central.writeUInt16LE(0, 34);                 // disk number
+    central.writeUInt16LE(0, 36);                 // internal attrs
+    central.writeUInt32LE(isDir ? 0x10 : 0, 38);  // external attrs
+    central.writeUInt32LE(offset, 42);            // local header offset
+    nameBytes.copy(central, 46);
+
+    centralHeaders.push(central);
+    offset += local.length + fileData.length;
+  }
+
+  const cdData = Buffer.concat(centralHeaders);
+  const cdOffset = offset;
+
+  // End of central directory (22 bytes)
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);              // signature
+  eocd.writeUInt16LE(0, 4);                       // disk number
+  eocd.writeUInt16LE(0, 6);                       // cd start disk
+  eocd.writeUInt16LE(entries.length, 8);           // cd entries on disk
+  eocd.writeUInt16LE(entries.length, 10);           // cd entries total
+  eocd.writeUInt32LE(cdData.length, 12);           // cd size
+  eocd.writeUInt32LE(cdOffset, 16);                // cd offset
+  eocd.writeUInt16LE(0, 20);                       // comment length
+
+  return Buffer.concat([...localHeaders, cdData, eocd]);
+}
+
+/** CRC-32 (ISO 3309) */
+function crc32(buf: Buffer): number {
+  let crc = 0xffffffff;
+  for (let i = 0; i < buf.length; i++) {
+    crc ^= buf[i];
+    for (let j = 0; j < 8; j++) {
+      crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
 }
 
 export { keyToNumericId };

@@ -1,9 +1,8 @@
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { processDocxStubs, readZip } from "../src/docx-processor.js";
+import { processDocxStubs, readZip, writeZip } from "../src/docx-processor.js";
 
 const tmpPaths: string[] = [];
 
@@ -114,36 +113,26 @@ function createDocxFixture(documentXml: string, customXml: string) {
   const rootDir = mkdtempSync(join(tmpdir(), "zotero-docx-fixture-"));
   tmpPaths.push(rootDir);
 
-  mkdirSync(join(rootDir, "_rels"), { recursive: true });
-  mkdirSync(join(rootDir, "word"), { recursive: true });
-  mkdirSync(join(rootDir, "docProps"), { recursive: true });
+  const contentTypes =
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+    `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
+    `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>` +
+    `<Default Extension="xml" ContentType="application/xml"/>` +
+    `</Types>`;
+  const rels =
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+    `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>`;
 
-  writeFileSync(
-    join(rootDir, "[Content_Types].xml"),
-    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-      `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
-      `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>` +
-      `<Default Extension="xml" ContentType="application/xml"/>` +
-      `</Types>`
-  );
-  writeFileSync(
-    join(rootDir, "_rels/.rels"),
-    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-      `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>`
-  );
-  writeFileSync(join(rootDir, "word/document.xml"), documentXml);
-  writeFileSync(join(rootDir, "docProps/custom.xml"), customXml);
+  const entries = [
+    { name: "[Content_Types].xml", data: Buffer.from(contentTypes) },
+    { name: "_rels/.rels", data: Buffer.from(rels) },
+    { name: "word/document.xml", data: Buffer.from(documentXml) },
+    { name: "docProps/custom.xml", data: Buffer.from(customXml) },
+  ];
 
   const inputPath = join(rootDir, "input.docx");
   const outputPath = join(rootDir, "output.docx");
-  execFileSync(
-    "zip",
-    ["-r", "-X", inputPath, "[Content_Types].xml", "_rels", "word", "docProps"],
-    {
-      cwd: rootDir,
-      stdio: "ignore",
-    }
-  );
+  writeFileSync(inputPath, writeZip(entries));
 
   return { inputPath, outputPath };
 }
