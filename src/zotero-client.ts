@@ -376,13 +376,16 @@ export class ZoteroClient {
       return this.cachedUserId;
     }
 
-    // Local mode: query the Zotero app
-    const port = this.config.localPort ?? 23119;
-    const url = `http://localhost:${port}/api/users/0`;
+    // Local mode: extract user ID from any item's library field,
+    // since /api/users/0 is not a valid endpoint on the local API.
+    const params = new URLSearchParams();
+    params.set("format", "json");
+    params.set("limit", "1");
+    const url = `${this.baseUrl}/items?${params}`;
     const response = await this.request(url);
-    const data = (await response.json()) as { userID?: number; id?: number };
-    const id = data.userID ?? data.id;
-    if (!id) throw new Error("Zotero API did not return a user ID");
+    const items = (await response.json()) as Array<{ library?: { id?: number } }>;
+    const id = items[0]?.library?.id;
+    if (!id) throw new Error("Could not determine Zotero user ID from library items");
     this.cachedUserId = String(id);
     return this.cachedUserId;
   }
