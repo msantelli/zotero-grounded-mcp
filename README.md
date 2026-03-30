@@ -19,7 +19,7 @@ You don't interact with this server directly. Instead, you configure Claude Code
 | `zotero_bibliography` | Build a sorted Works Cited from item keys |
 | `zotero_get_notes` | Get notes and PDF annotations attached to an item |
 | `zotero_get_attachments` | Get PDF and file attachments for an item |
-| `zotero_word_field_code` | Generate Zotero Word field code XML for live .docx citations |
+| `zotero_cite_stub` | Generate validated citation stubs for .docx documents |
 
 Citation formatting uses **citeproc-js** with the Chicago Author-Date style (18th ed.) by default. The `zotero_cite` and `zotero_bibliography` tools accept an optional `style` parameter.
 

@@ -10,7 +10,7 @@
  *   - zotero_bibliography  Generate a formatted bibliography from item keys
  *   - zotero_get_notes     Get notes and annotations attached to an item
  *   - zotero_get_attachments  Get PDF and file attachments for an item
- *   - zotero_word_field_code  Generate Zotero Word field code XML for live citations
+ *   - zotero_cite_stub        Generate validated citation stubs for .docx documents
  *
  * Configuration is via environment variables:
  *   ZOTERO_MODE          "local" (default) or "web"
@@ -31,12 +31,6 @@ import {
   formatBibliography,
 } from "./formatter.js";
 import { htmlToMarkdown } from "./html-utils.js";
-import {
-  buildFieldCodeXml,
-  buildBibliographyFieldXml,
-  buildZoteroPrefsXml,
-  type FieldCodeOptions,
-} from "./word-fields.js";
 
 // --- Config from env ---
 const mode = (process.env.ZOTERO_MODE ?? "local") as "local" | "web";
@@ -405,101 +399,106 @@ server.tool(
 );
 
 // ──────────────────────────────────────────
-// Tool: zotero_word_field_code
+// Tool: zotero_cite_stub
 // ──────────────────────────────────────────
 server.tool(
-  "zotero_word_field_code",
-  `Generate Zotero-compatible Word field code XML for citations. When injected into a .docx file, the Zotero Word plugin recognizes these as live citations that can be Refreshed, reformatted, and included in auto-generated bibliographies. Returns XML snippets plus docProps/custom.xml content. This tool is read-only — it returns XML text, it does not modify any files.`,
+  "zotero_cite_stub",
+  `Generate validated citation stubs for use in documents. Each stub references a real Zotero item — if any key doesn't exist, the tool returns an error. Use these stubs in .docx documents; the user runs a Word macro to convert them into live Zotero citations.
+
+Stub format:
+  {{CITE:KEY}} — simple citation
+  {{CITE:KEY|p=42}} — with page locator
+  {{CITE:KEY1;KEY2}} — grouped (multiple sources, one claim)
+  {{CITE:KEY|prefix=see |suffix=, emphasis added}} — with prefix/suffix
+  {{CITE:KEY|suppress-author}} — for narrative citations like "Brandom (2019) argues..."
+  {{BIBLIOGRAPHY}} — bibliography placeholder (place at end of document)
+
+IMPORTANT: Always call this tool to get stubs instead of writing them by hand. This validates that every key exists in the user's Zotero library, preventing hallucinated references.`,
   {
-    keys: z
-      .array(z.string())
-      .min(1)
-      .describe("Array of Zotero item keys to generate field codes for"),
-    grouped: z
-      .boolean()
-      .optional()
-      .describe("If true, generate a single multi-source citation (e.g. '(Author1, 2020; Author2, 2021)')"),
-    locators: z
+    citations: z
       .array(
         z.object({
-          key: z.string().describe("Item key"),
-          locator: z.string().optional().describe("Page number or locator (e.g. '108', '§3.2')"),
+          keys: z.array(z.string()).min(1).describe("Zotero item key(s). Multiple keys = grouped citation."),
+          locator: z.string().optional().describe("Page or locator (e.g. '42', '§3.2', 'ch. 5')"),
           prefix: z.string().optional().describe("Text before citation (e.g. 'see ')"),
           suffix: z.string().optional().describe("Text after citation (e.g. ', emphasis added')"),
-          suppressAuthor: z.boolean().optional().describe("Suppress author name for narrative citations"),
+          suppressAuthor: z.boolean().optional().describe("Suppress author for narrative citations"),
         })
       )
-      .optional()
-      .describe("Per-item citation options"),
-    style: z
-      .string()
-      .optional()
-      .describe("CSL style URL for docProps preferences (default: APA). E.g. 'http://www.zotero.org/styles/chicago-author-date'"),
+      .min(1)
+      .describe("Array of citations to generate stubs for"),
     bibliography: z
       .boolean()
       .optional()
-      .describe("If true, also include a bibliography (ZOTERO_BIBL) field code"),
+      .describe("If true, also include a {{BIBLIOGRAPHY}} stub"),
+    bibliographyStyle: z
+      .string()
+      .optional()
+      .describe("CSL style for bibliography (e.g. 'chicago-author-date'). Default: apa"),
   },
-  async ({ keys, grouped, locators, style, bibliography }) => {
+  async ({ citations, bibliography, bibliographyStyle }) => {
     try {
-      const items = await client.getItems(keys);
-      const userId = await client.getUserId();
+      // Validate all keys exist
+      const allKeys = [...new Set(citations.flatMap((c) => c.keys))];
+      const items = await client.getItems(allKeys);
+      const foundKeys = new Set(items.map((i) => i.key));
+      const missingKeys = allKeys.filter((k) => !foundKeys.has(k));
 
-      const options: FieldCodeOptions = {
-        userId,
-        libraryType,
-        groupId: process.env.ZOTERO_GROUP_ID,
-        styleUrl: style,
-      };
-      const locatorMap = new Map((locators ?? []).map((l) => [l.key, l]));
-      const sections: string[] = [];
+      if (missingKeys.length > 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Error: The following Zotero item keys were not found in the library: ${missingKeys.join(", ")}. Use zotero_search to find valid keys.`,
+            },
+          ],
+          isError: true,
+        };
+      }
 
-      if (grouped) {
-        const citItems = items.map((item) => {
-          const loc = locatorMap.get(item.data.key);
-          return {
-            item,
-            locator: loc?.locator,
-            prefix: loc?.prefix,
-            suffix: loc?.suffix,
-            suppressAuthor: loc?.suppressAuthor,
-          };
-        });
-        const xml = buildFieldCodeXml(citItems, options);
-        sections.push("## Grouped Citation Field Code\n");
-        sections.push("```xml\n" + xml + "\n```");
-      } else {
-        sections.push("## Individual Citation Field Codes\n");
-        for (const item of items) {
-          const loc = locatorMap.get(item.data.key);
-          const xml = buildFieldCodeXml(
-            [{
-              item,
-              locator: loc?.locator,
-              prefix: loc?.prefix,
-              suffix: loc?.suffix,
-              suppressAuthor: loc?.suppressAuthor,
-            }],
-            options
-          );
-          sections.push(`### ${item.data.title} [\`${item.data.key}\`]\n`);
-          sections.push("```xml\n" + xml + "\n```\n");
-        }
+      // Build stubs
+      const stubs: string[] = [];
+      for (const cit of citations) {
+        const keyPart = cit.keys.join(";");
+        const opts: string[] = [];
+        if (cit.locator) opts.push(`p=${cit.locator}`);
+        if (cit.prefix) opts.push(`prefix=${cit.prefix}`);
+        if (cit.suffix) opts.push(`suffix=${cit.suffix}`);
+        if (cit.suppressAuthor) opts.push("suppress-author");
+        const optsPart = opts.length > 0 ? "|" + opts.join("|") : "";
+        stubs.push(`{{CITE:${keyPart}${optsPart}}}`);
+      }
+
+      // Build a readable summary for each citation
+      const lines: string[] = ["## Citation Stubs\n"];
+      for (let i = 0; i < citations.length; i++) {
+        const cit = citations[i];
+        const citItems = cit.keys.map((k) => items.find((it) => it.key === k)!);
+        const desc = citItems
+          .map((it) => {
+            const author = it.data.creators?.[0]?.lastName ?? "Unknown";
+            const year = it.data.date?.match(/\d{4}/)?.[0] ?? "n.d.";
+            return `${author} ${year}`;
+          })
+          .join("; ");
+        lines.push(`**${desc}**: \`${stubs[i]}\``);
       }
 
       if (bibliography) {
-        sections.push("## Bibliography Field Code\n");
-        sections.push("```xml\n" + buildBibliographyFieldXml() + "\n```\n");
+        const bibStub = bibliographyStyle
+          ? `{{BIBLIOGRAPHY|style=${bibliographyStyle}}}`
+          : "{{BIBLIOGRAPHY}}";
+        lines.push(`\n**Bibliography**: \`${bibStub}\``);
+        stubs.push(bibStub);
       }
 
-      const styleUrl = style ?? "http://www.zotero.org/styles/apa";
-      sections.push("## docProps/custom.xml (Zotero Preferences)\n");
-      sections.push("```xml\n" + buildZoteroPrefsXml(styleUrl) + "\n```");
+      lines.push("\n---\n");
+      lines.push("Copy these stubs into your document. After saving as .docx, run the **Process Citation Stubs** macro in Word to convert them to live Zotero citations.");
 
-      return { content: [{ type: "text", text: sections.join("\n") }] };
+      return { content: [{ type: "text", text: lines.join("\n") }] };
     } catch (error) {
       return {
-        content: [{ type: "text", text: `Error generating field codes: ${error}` }],
+        content: [{ type: "text", text: `Error generating stubs: ${error}` }],
         isError: true,
       };
     }
