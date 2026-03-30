@@ -182,9 +182,15 @@ describe("ZoteroClient — web mode", () => {
     mockFetch.mockReset();
   });
 
-  it("requires userId and apiKey", () => {
+  it("requires apiKey", () => {
     expect(() => new ZoteroClient({ mode: "web" })).toThrow(
-      "Web mode requires userId and apiKey"
+      "Web mode requires apiKey"
+    );
+  });
+
+  it("requires userId for user libraries", () => {
+    expect(() => new ZoteroClient({ mode: "web", apiKey: "abc" })).toThrow(
+      "Web mode requires userId for user libraries"
     );
   });
 
@@ -212,5 +218,42 @@ describe("ZoteroClient — web mode", () => {
     const headers = opts.headers as Record<string, string>;
     expect(headers["Zotero-API-Key"]).toBe("mykey");
     expect(headers["Zotero-API-Version"]).toBe("3");
+  });
+});
+
+describe("ZoteroClient — group library", () => {
+  beforeEach(() => {
+    mockFetch.mockReset();
+  });
+
+  it("requires groupId for group library type", () => {
+    expect(
+      () => new ZoteroClient({ mode: "local", libraryType: "group" })
+    ).toThrow("Group library mode requires groupId");
+  });
+
+  it("constructs local group URL", async () => {
+    const client = new ZoteroClient({
+      mode: "local",
+      libraryType: "group",
+      groupId: "98765",
+    });
+    mockFetch.mockResolvedValueOnce(mockResponse([journalArticle]));
+    await client.searchItems("test");
+    const url = mockFetch.mock.calls[0][0] as string;
+    expect(url).toContain("http://localhost:23119/api/groups/98765/items");
+  });
+
+  it("constructs web group URL", async () => {
+    const client = new ZoteroClient({
+      mode: "web",
+      libraryType: "group",
+      groupId: "98765",
+      apiKey: "abc",
+    });
+    mockFetch.mockResolvedValueOnce(mockResponse([]));
+    await client.searchItems("test");
+    const url = mockFetch.mock.calls[0][0] as string;
+    expect(url).toContain("https://api.zotero.org/groups/98765/items");
   });
 });

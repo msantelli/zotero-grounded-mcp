@@ -200,6 +200,25 @@ export const annotationChild: ZoteroItem = {
   },
 };
 
+export const attachmentChild: ZoteroItem = {
+  key: "ATT00001",
+  version: 1,
+  data: {
+    key: "ATT00001",
+    itemType: "attachment",
+    title: "Brandom 1994 - Making It Explicit.pdf",
+    filename: "Brandom 1994 - Making It Explicit.pdf",
+    contentType: "application/pdf",
+    linkMode: "imported_file",
+    path: "storage:Brandom 1994 - Making It Explicit.pdf",
+    creators: [],
+    tags: [],
+    collections: [],
+    dateAdded: "2024-01-15T10:05:00Z",
+    dateModified: "2024-01-15T10:05:00Z",
+  },
+};
+
 export const sampleCollections: ZoteroCollection[] = [
   {
     key: "COL001",

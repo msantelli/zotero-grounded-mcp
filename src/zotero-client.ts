@@ -9,6 +9,10 @@
 export interface ZoteroConfig {
   /** "local" uses the Zotero desktop app's local API; "web" uses api.zotero.org */
   mode: "local" | "web";
+  /** "user" (default) or "group" — which library type to access */
+  libraryType?: "user" | "group";
+  /** Required for group libraries — the numeric group ID */
+  groupId?: string;
   /** Required for web mode — your Zotero userID (numeric) */
   userId?: string;
   /** Required for web mode — API key from zotero.org/settings/keys */
@@ -47,6 +51,11 @@ export interface ZoteroItem {
     proceedingsTitle?: string;
     thesisType?: string;
     university?: string;
+    // Attachment fields
+    linkMode?: string;
+    filename?: string;
+    contentType?: string;
+    path?: string;
     tags: Array<{ tag: string }>;
     collections: string[];
     dateAdded: string;
@@ -69,25 +78,54 @@ export class ZoteroClient {
   private config: ZoteroConfig;
   private baseUrl: string;
   private headers: Record<string, string>;
+  private itemCache = new Map<string, { item: ZoteroItem; time: number }>();
+  private cacheMaxAge = 30 * 60 * 1000; // 30 minutes
 
   constructor(config: ZoteroConfig) {
     this.config = config;
+    const isGroup = config.libraryType === "group";
+
+    if (isGroup && !config.groupId) {
+      throw new Error("Group library mode requires groupId");
+    }
 
     if (config.mode === "local") {
       const port = config.localPort ?? 23119;
-      this.baseUrl = `http://localhost:${port}/api/users/0`;
+      const prefix = isGroup
+        ? `/api/groups/${config.groupId}`
+        : `/api/users/0`;
+      this.baseUrl = `http://localhost:${port}${prefix}`;
       this.headers = { "Content-Type": "application/json" };
     } else {
-      if (!config.userId || !config.apiKey) {
-        throw new Error("Web mode requires userId and apiKey");
+      if (!config.apiKey) {
+        throw new Error("Web mode requires apiKey");
       }
-      this.baseUrl = `https://api.zotero.org/users/${config.userId}`;
+      if (!isGroup && !config.userId) {
+        throw new Error("Web mode requires userId for user libraries");
+      }
+      const prefix = isGroup
+        ? `/groups/${config.groupId}`
+        : `/users/${config.userId}`;
+      this.baseUrl = `https://api.zotero.org${prefix}`;
       this.headers = {
         "Zotero-API-Version": "3",
         "Zotero-API-Key": config.apiKey,
         "Content-Type": "application/json",
       };
     }
+  }
+
+  private getCached(key: string): ZoteroItem | undefined {
+    const entry = this.itemCache.get(key);
+    if (entry && Date.now() - entry.time < this.cacheMaxAge) {
+      return entry.item;
+    }
+    if (entry) this.itemCache.delete(key);
+    return undefined;
+  }
+
+  private putCache(item: ZoteroItem): void {
+    this.itemCache.set(item.key, { item, time: Date.now() });
   }
 
   /**
@@ -173,13 +211,18 @@ export class ZoteroClient {
    * Get a single item by its key.
    */
   async getItem(key: string): Promise<ZoteroItem> {
+    const cached = this.getCached(key);
+    if (cached) return cached;
+
     const params = new URLSearchParams();
     params.set("format", "json");
     params.set("include", "data,csljson");
 
     const url = `${this.baseUrl}/items/${key}?${params}`;
     const response = await this.request(url);
-    return this.normalizeCslJson((await response.json()) as ZoteroItem);
+    const item = this.normalizeCslJson((await response.json()) as ZoteroItem);
+    this.putCache(item);
+    return item;
   }
 
   /**
@@ -273,21 +316,41 @@ export class ZoteroClient {
    */
   async getItems(keys: string[]): Promise<ZoteroItem[]> {
     if (keys.length === 0) return [];
-    if (keys.length === 1) return [await this.getItem(keys[0])];
 
-    const params = new URLSearchParams();
-    params.set("itemKey", keys.join(","));
-    params.set("format", "json");
-    params.set("include", "data,csljson");
+    // Check cache for each key, collect misses
+    const results: ZoteroItem[] = [];
+    const missingKeys: string[] = [];
+    for (const key of keys) {
+      const cached = this.getCached(key);
+      if (cached) {
+        results.push(cached);
+      } else {
+        missingKeys.push(key);
+      }
+    }
 
-    const url = `${this.baseUrl}/items?${params}`;
-    const response = await this.request(url);
-    const items = (await response.json()) as ZoteroItem[];
-    // Filter to only the requested keys (batch endpoint may include child items)
-    const keySet = new Set(keys);
-    return items
-      .filter((i) => keySet.has(i.key))
-      .map((i) => this.normalizeCslJson(i));
+    if (missingKeys.length === 1) {
+      results.push(await this.getItem(missingKeys[0]));
+    } else if (missingKeys.length > 1) {
+      const params = new URLSearchParams();
+      params.set("itemKey", missingKeys.join(","));
+      params.set("format", "json");
+      params.set("include", "data,csljson");
+
+      const url = `${this.baseUrl}/items?${params}`;
+      const response = await this.request(url);
+      const items = (await response.json()) as ZoteroItem[];
+      const keySet = new Set(missingKeys);
+      for (const item of items) {
+        if (keySet.has(item.key)) {
+          const normalized = this.normalizeCslJson(item);
+          this.putCache(normalized);
+          results.push(normalized);
+        }
+      }
+    }
+
+    return results;
   }
 
   /**

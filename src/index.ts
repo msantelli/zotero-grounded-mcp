@@ -9,12 +9,15 @@
  *   - zotero_cite          Format citations for one or more items
  *   - zotero_bibliography  Generate a formatted bibliography from item keys
  *   - zotero_get_notes     Get notes and annotations attached to an item
+ *   - zotero_get_attachments  Get PDF and file attachments for an item
  *
  * Configuration is via environment variables:
- *   ZOTERO_MODE       "local" (default) or "web"
- *   ZOTERO_USER_ID    required for web mode
- *   ZOTERO_API_KEY    required for web mode
- *   ZOTERO_LOCAL_PORT defaults to 23119
+ *   ZOTERO_MODE          "local" (default) or "web"
+ *   ZOTERO_LIBRARY_TYPE  "user" (default) or "group"
+ *   ZOTERO_GROUP_ID      required for group libraries
+ *   ZOTERO_USER_ID       required for web mode (user libraries)
+ *   ZOTERO_API_KEY       required for web mode
+ *   ZOTERO_LOCAL_PORT    defaults to 23119
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -30,8 +33,11 @@ import { htmlToMarkdown } from "./html-utils.js";
 
 // --- Config from env ---
 const mode = (process.env.ZOTERO_MODE ?? "local") as "local" | "web";
+const libraryType = (process.env.ZOTERO_LIBRARY_TYPE ?? "user") as "user" | "group";
 const client = new ZoteroClient({
   mode,
+  libraryType,
+  groupId: process.env.ZOTERO_GROUP_ID,
   userId: process.env.ZOTERO_USER_ID,
   apiKey: process.env.ZOTERO_API_KEY,
   localPort: process.env.ZOTERO_LOCAL_PORT
@@ -335,6 +341,56 @@ server.tool(
     } catch (error) {
       return {
         content: [{ type: "text", text: `Error fetching notes: ${error}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ──────────────────────────────────────────
+// Tool: zotero_get_attachments
+// ──────────────────────────────────────────
+server.tool(
+  "zotero_get_attachments",
+  "Get file attachments (PDFs, etc.) for a Zotero item. Returns filenames, file paths, content types, and link modes.",
+  {
+    key: z.string().describe("Zotero item key (e.g. 'ABC12345')"),
+  },
+  async ({ key }) => {
+    try {
+      const children = await client.getItemChildren(key);
+      const attachments = children.filter(
+        (c) => c.data.itemType === "attachment"
+      );
+
+      if (attachments.length === 0) {
+        return {
+          content: [
+            { type: "text", text: `No attachments found for item \`${key}\`.` },
+          ],
+        };
+      }
+
+      const lines: string[] = [`## Attachments (${attachments.length})\n`];
+      for (const att of attachments) {
+        const d = att.data;
+        const parts: string[] = [];
+        parts.push(`**${d.filename ?? d.title ?? "Untitled"}**`);
+        if (d.contentType) parts.push(`Type: ${d.contentType}`);
+        if (d.linkMode) parts.push(`Link mode: ${d.linkMode}`);
+        if (d.path) parts.push(`Path: ${d.path}`);
+        if (d.url) parts.push(`URL: ${d.url}`);
+        parts.push(`Key: \`${d.key}\``);
+        lines.push(parts.join("\n"));
+        lines.push("");
+      }
+
+      return {
+        content: [{ type: "text", text: lines.join("\n") }],
+      };
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: `Error fetching attachments: ${error}` }],
         isError: true,
       };
     }

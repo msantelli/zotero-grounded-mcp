@@ -18,6 +18,7 @@ You don't interact with this server directly. Instead, you configure Claude Code
 | `zotero_cite` | Generate inline + full citations for given item keys |
 | `zotero_bibliography` | Build a sorted Works Cited from item keys |
 | `zotero_get_notes` | Get notes and PDF annotations attached to an item |
+| `zotero_get_attachments` | Get PDF and file attachments for an item |
 
 Citation formatting uses **citeproc-js** with the Chicago Author-Date style (18th ed.) by default. The `zotero_cite` and `zotero_bibliography` tools accept an optional `style` parameter.
 
@@ -163,6 +164,19 @@ Or in `settings.json`:
 }
 ```
 
+## Using a group library
+
+To access a Zotero group library instead of your personal library, add the group config:
+
+```bash
+claude mcp add zotero node /full/path/to/zotero-mcp/dist/index.js \
+  -e ZOTERO_MODE=local \
+  -e ZOTERO_LIBRARY_TYPE=group \
+  -e ZOTERO_GROUP_ID=your_group_id
+```
+
+You can find the group ID in the URL when you view the group on zotero.org (e.g., `https://www.zotero.org/groups/12345` → group ID is `12345`).
+
 ## Using with Claude Cowork (Windows/Mac desktop)
 
 Claude Cowork is Anthropic's agentic AI that runs in a virtual machine on your desktop. It supports MCP servers through the Claude Desktop config -- the server runs on your host machine and Cowork bridges to it automatically.
@@ -218,7 +232,9 @@ Quit and reopen Claude Desktop. The Zotero tools should now appear in Cowork ses
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ZOTERO_MODE` | `local` | `"local"` = Zotero desktop; `"web"` = zotero.org API |
-| `ZOTERO_USER_ID` | -- | Your numeric user ID (web mode only) |
+| `ZOTERO_LIBRARY_TYPE` | `user` | `"user"` = personal library; `"group"` = group library |
+| `ZOTERO_GROUP_ID` | -- | Numeric group ID (required when `ZOTERO_LIBRARY_TYPE=group`) |
+| `ZOTERO_USER_ID` | -- | Your numeric user ID (web mode, user libraries only) |
 | `ZOTERO_API_KEY` | -- | API key from zotero.org/settings/keys (web mode only) |
 | `ZOTERO_LOCAL_PORT` | `23119` | Port for the local Zotero connector |
 
@@ -293,7 +309,7 @@ zotero-mcp/
 
 ## Remaining TODOs
 
-- [ ] Add more CSL styles (APA, MLA) as bundled options
-- [ ] Attachment access: tool to retrieve file paths of PDF attachments
-- [ ] Group libraries: support Zotero group libraries alongside personal ones
-- [ ] In-memory cache for repeated item lookups within a session
+- [x] ~~Add more CSL styles~~ — APA, MLA, IEEE, Harvard bundled
+- [x] ~~Attachment access~~ — `zotero_get_attachments` tool
+- [x] ~~Group libraries~~ — `ZOTERO_LIBRARY_TYPE=group` + `ZOTERO_GROUP_ID`
+- [x] ~~In-memory cache~~ — 30-minute TTL for item lookups
