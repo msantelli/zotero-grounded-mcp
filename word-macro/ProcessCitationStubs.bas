@@ -158,21 +158,42 @@ End Function
 ' Insert a Zotero field code with proper 5-part structure:
 ' begin → instrText → separate → display text → end
 '
-' Uses raw Unicode field characters (Chr(19)/Chr(20)/Chr(21))
-' inserted directly into the document. This bypasses Fields.Add
-' which doesn't create the separate+result structure for ADDIN
-' fields and reformats instrText with tabs.
-'
-' Chr(19) = field begin mark
-' Chr(20) = field separate mark (between code and result)
-' Chr(21) = field end mark
+' Uses Fields.Add to create the field, then overwrites the code
+' text for compactness. To force creation of the separate+result
+' structure (which Fields.Add doesn't do for ADDIN fields), we
+' toggle field codes off, which forces Word to create a result
+' range, then set the result text.
 '----------------------------------------------------------------
 Private Sub InsertZoteroField(rng As Range, instrText As String, displayText As String)
-    rng.Select
+    ' Step 1: Create the field
+    Dim fld As Field
+    Set fld = ActiveDocument.Fields.Add( _
+        Range:=rng, _
+        Type:=wdFieldEmpty, _
+        Text:=instrText, _
+        PreserveFormatting:=False)
 
-    ' Insert: begin + instrText + separate + displayText + end
-    ' as a single text block using Word's special field characters
-    Selection.TypeText Text:=Chr(19) & " " & instrText & " " & Chr(20) & displayText & Chr(21)
+    ' Step 2: Compact the instrText (remove Word's tab reformatting)
+    fld.Code.Text = " " & instrText & " "
+
+    ' Step 3: Show field results (not codes) to force Word to
+    ' create the separate element and result range
+    fld.ShowCodes = False
+
+    ' Step 4: Select the field and collapse to the result area,
+    ' then type the display text
+    fld.Select
+    With Selection
+        ' Collapse to end of the field result area
+        .Collapse Direction:=wdCollapseEnd
+        ' Move back inside the field (before the end mark)
+        .MoveLeft Unit:=wdCharacter, count:=1
+        ' Type the display text
+        .TypeText Text:=displayText
+    End With
+
+    ' Step 5: Lock so Word doesn't clear result before Zotero Refresh
+    fld.Locked = True
 End Sub
 
 '----------------------------------------------------------------
