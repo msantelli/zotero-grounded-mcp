@@ -20,31 +20,29 @@ Private Const ZOTERO_API_USER As String = "http://localhost:23119/api/users/0"
 Private Const ZOTERO_API_GROUP_PREFIX As String = "http://localhost:23119/api/groups/"
 Private Const DEFAULT_STYLE_URL As String = "http://www.zotero.org/styles/apa"
 
+' OOXML namespace
+Private Const W_NS As String = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
 ' Cached user ID (fetched once per run)
 Private m_userId As String
 Private m_documentStyleUrl As String
 
 '----------------------------------------------------------------
-' Main entry point — call this from the Word toolbar
+' Main entry point
 '----------------------------------------------------------------
 Public Sub ProcessCitationStubs()
     On Error GoTo ErrHandler
 
     Application.ScreenUpdating = False
 
-    ' Best-effort user ID lookup for personal-library and legacy stubs.
-    ' Group-library stubs carry their own library context.
     m_userId = GetZoteroUserId()
     m_documentStyleUrl = ""
 
-    ' Process bibliography stubs first (so citation processing doesn't shift positions)
     ProcessBibliographyStubs
 
-    ' Process citation stubs
     Dim count As Long
     count = ProcessCiteStubs()
 
-    ' Set Zotero document preferences
     SetZoteroPreferences
 
     Application.ScreenUpdating = True
@@ -55,9 +53,6 @@ Public Sub ProcessCitationStubs()
 ErrHandler:
     Application.ScreenUpdating = True
     MsgBox "Error: " & Err.Description, vbCritical
-
-Cleanup:
-    Application.ScreenUpdating = True
 End Sub
 
 '----------------------------------------------------------------
@@ -71,23 +66,15 @@ Private Function GetZoteroUserId() As String
         Exit Function
     End If
 
-    ' Extract library.id from the JSON response
-    ' The response is an array: [{"key":"...","library":{"id":12345,...},...}]
     Dim pos As Long
     pos = InStr(json, """library""")
-    If pos = 0 Then
-        GetZoteroUserId = ""
-        Exit Function
-    End If
+    If pos = 0 Then GetZoteroUserId = "": Exit Function
 
     pos = InStr(pos, json, """id"":")
-    If pos = 0 Then
-        GetZoteroUserId = ""
-        Exit Function
-    End If
+    If pos = 0 Then GetZoteroUserId = "": Exit Function
 
     Dim numStart As Long
-    numStart = pos + 5 ' skip past "id":
+    numStart = pos + 5
     Dim numEnd As Long
     numEnd = numStart
     Do While numEnd <= Len(json) And IsNumeric(Mid(json, numEnd, 1))
@@ -98,14 +85,13 @@ Private Function GetZoteroUserId() As String
 End Function
 
 '----------------------------------------------------------------
-' Process all {{CITE:...}} stubs in the document
+' Process all {{CITE:...}} stubs
 '----------------------------------------------------------------
 Private Function ProcessCiteStubs() As Long
     Dim rng As Range
     Dim count As Long
     count = 0
 
-    ' Search from the beginning each time (positions shift after insertion)
     Do
         Set rng = ActiveDocument.Content
         With rng.Find
@@ -114,19 +100,14 @@ Private Function ProcessCiteStubs() As Long
             .MatchWildcards = True
             .Forward = True
             .Wrap = wdFindStop
-
             If Not .Execute Then Exit Do
         End With
 
-        ' Parse the stub text
         Dim stubText As String
         stubText = rng.Text
+        stubText = Mid(stubText, 3, Len(stubText) - 4) ' remove {{ and }}
+        stubText = Mid(stubText, 6) ' remove CITE:
 
-        ' Remove {{ and }}
-        stubText = Mid(stubText, 3, Len(stubText) - 4) ' removes {{ and }}
-        stubText = Mid(stubText, 6) ' removes CITE:
-
-        ' Parse keys and options
         Dim parts() As String
         parts = Split(stubText, "|")
 
@@ -156,27 +137,19 @@ Private Function ProcessCiteStubs() As Long
             End If
         Next i
 
-        ' Split keys (semicolon-separated for grouped citations)
         Dim keys() As String
         keys = Split(keysStr, ";")
 
-        ' Build the field code
+        ' Build the field code JSON and display text
         Dim fieldCode As String
-        fieldCode = BuildCitationFieldCode(keys, locator, prefix, suffix, suppressAuthor, librarySpec)
+        Dim displayText As String
+        fieldCode = BuildCitationFieldCode(keys, locator, prefix, suffix, suppressAuthor, librarySpec, displayText)
 
         If fieldCode <> "" Then
-            ' Replace the stub with a field
-            rng.Select
-            Dim fld As Field
-            Set fld = ActiveDocument.Fields.Add( _
-                Range:=Selection.Range, _
-                Type:=wdFieldEmpty, _
-                Text:=fieldCode, _
-                PreserveFormatting:=False)
+            ' Insert as OOXML with proper 5-part structure
+            InsertZoteroField rng, fieldCode, displayText
             count = count + 1
         Else
-            ' Could not fetch item — leave stub and move on
-            ' Move past this stub to avoid infinite loop
             rng.Collapse wdCollapseEnd
         End If
     Loop
@@ -185,7 +158,38 @@ Private Function ProcessCiteStubs() As Long
 End Function
 
 '----------------------------------------------------------------
+' Insert a Zotero field code as OOXML with 5-part structure:
+' begin → instrText → separate → display text → end
+'----------------------------------------------------------------
+Private Sub InsertZoteroField(rng As Range, instrText As String, displayText As String)
+    Dim xmlStr As String
+
+    ' XML-escape the instrText (it contains JSON with quotes and ampersands)
+    Dim escapedInstr As String
+    escapedInstr = EscapeXml(instrText)
+
+    ' XML-escape the display text
+    Dim escapedDisplay As String
+    escapedDisplay = EscapeXml(displayText)
+
+    ' Build the complete OOXML for the field code
+    ' This matches the exact structure Zotero produces natively
+    xmlStr = "<?xml version=""1.0"" encoding=""UTF-8"" standalone=""yes""?>" & _
+             "<w:document xmlns:w=""" & W_NS & """>" & _
+             "<w:body><w:p>" & _
+             "<w:r><w:fldChar w:fldCharType=""begin""/></w:r>" & _
+             "<w:r><w:instrText xml:space=""preserve""> " & escapedInstr & " </w:instrText></w:r>" & _
+             "<w:r><w:fldChar w:fldCharType=""separate""/></w:r>" & _
+             "<w:r><w:t>" & escapedDisplay & "</w:t></w:r>" & _
+             "<w:r><w:fldChar w:fldCharType=""end""/></w:r>" & _
+             "</w:p></w:body></w:document>"
+
+    rng.InsertXML xmlStr
+End Sub
+
+'----------------------------------------------------------------
 ' Build ADDIN ZOTERO_ITEM CSL_CITATION JSON for one citation
+' Also sets displayText (ByRef) for the visible part of the field
 '----------------------------------------------------------------
 Private Function BuildCitationFieldCode( _
     keys() As String, _
@@ -193,18 +197,16 @@ Private Function BuildCitationFieldCode( _
     prefix As String, _
     suffix As String, _
     suppressAuthor As Boolean, _
-    librarySpec As String _
+    librarySpec As String, _
+    ByRef displayText As String _
 ) As String
 
-    ' Generate citation ID (8 random alphanumeric chars)
     Dim citId As String
     citId = GenerateCitationId()
 
-    ' Build citationItems array
-    Dim citItems As String
-    citItems = ""
-    Dim displayParts As String
-    displayParts = ""
+    Dim citItems As String: citItems = ""
+    Dim displayParts As String: displayParts = ""
+
     Dim normalizedLibrarySpec As String
     normalizedLibrarySpec = NormalizeLibrarySpec(librarySpec)
     If normalizedLibrarySpec = "" Then
@@ -217,7 +219,6 @@ Private Function BuildCitationFieldCode( _
         Dim key As String
         key = Trim(keys(i))
 
-        ' Fetch item from Zotero API
         Dim itemJson As String
         itemJson = HttpGet(ApiBaseForLibrarySpec(normalizedLibrarySpec) & "/items/" & key & "?format=json&include=data,csljson")
         If itemJson = "" Then
@@ -225,26 +226,23 @@ Private Function BuildCitationFieldCode( _
             Exit Function
         End If
 
-        ' Extract CSL-JSON (it's a JSON string inside the response)
         Dim cslJson As String
         cslJson = ExtractCslJson(itemJson)
 
-        ' Build numeric ID from key
         Dim numId As Long
         numId = KeyToNumericId(key)
 
-        ' Build URI
         Dim uri As String
         uri = ZoteroUriForLibrarySpec(normalizedLibrarySpec, key)
 
-        ' Build display text
         Dim display As String
         display = ExtractDisplayText(cslJson)
 
-        ' Ensure itemData.id is numeric
+        ' Fix itemData: numeric id and numeric date-parts
         cslJson = FixItemDataId(cslJson, numId)
+        cslJson = FixDateParts(cslJson)
 
-        ' Build citation item JSON
+        ' Build citation item JSON (compact, single line)
         Dim citItem As String
         citItem = "{""id"":" & numId & ",""uris"":[""" & uri & """],""itemData"":" & cslJson
 
@@ -259,18 +257,14 @@ Private Function BuildCitationFieldCode( _
         citItems = citItems & citItem
 
         If displayParts <> "" Then displayParts = displayParts & "; "
-        displayParts = displayParts & Mid(display, 2, Len(display) - 2) ' strip parens
+        displayParts = displayParts & Mid(display, 2, Len(display) - 2)
     Next i
 
-    ' Build full display text
     Dim fullDisplay As String
-    If UBound(keys) = 0 Then
-        fullDisplay = "(" & displayParts & ")"
-    Else
-        fullDisplay = "(" & displayParts & ")"
-    End If
+    fullDisplay = "(" & displayParts & ")"
+    displayText = fullDisplay
 
-    ' Build the complete CSL_CITATION JSON
+    ' Build the complete CSL_CITATION JSON (compact, single line)
     Dim citation As String
     citation = "{""citationID"":""" & citId & """"
     citation = citation & ",""properties"":{""formattedCitation"":""" & JsonEscape(fullDisplay) & """,""plainCitation"":""" & JsonEscape(fullDisplay) & """,""noteIndex"":0}"
@@ -294,44 +288,40 @@ Private Sub ProcessBibliographyStubs()
             .MatchWildcards = True
             .Forward = True
             .Wrap = wdFindStop
-
             If Not .Execute Then Exit Do
         End With
 
         Dim stubText As String
         stubText = rng.Text
-        stubText = Mid(stubText, 3, Len(stubText) - 4) ' removes {{ and }}
-        stubText = Mid(stubText, 13) ' removes BIBLIOGRAPHY
+        stubText = Mid(stubText, 3, Len(stubText) - 4) ' remove {{ and }}
+        If Len(stubText) > 12 Then
+            stubText = Mid(stubText, 13) ' remove BIBLIOGRAPHY
+        Else
+            stubText = ""
+        End If
 
-        Dim parts() As String
-        parts = Split(stubText, "|")
+        If Len(stubText) > 0 Then
+            Dim parts() As String
+            parts = Split(stubText, "|")
 
-        Dim i As Long
-        For i = 1 To UBound(parts)
-            Dim opt As String
-            opt = Trim(parts(i))
-            If Left(opt, 6) = "style=" Then
-                Dim styleUrl As String
-                styleUrl = StyleNameToUrl(UrlDecode(Mid(opt, 7)))
-                If styleUrl = "" Then
-                    Err.Raise vbObjectError + 1000, "ProcessCitationStubs", _
-                        "Unsupported bibliography style in stub: " & Mid(opt, 7)
+            Dim i As Long
+            For i = 0 To UBound(parts)
+                Dim opt As String
+                opt = Trim(parts(i))
+                If Left(opt, 6) = "style=" Then
+                    Dim styleUrl As String
+                    styleUrl = StyleNameToUrl(UrlDecode(Mid(opt, 7)))
+                    If styleUrl <> "" Then
+                        m_documentStyleUrl = styleUrl
+                    End If
                 End If
-                If m_documentStyleUrl <> "" And m_documentStyleUrl <> styleUrl Then
-                    Err.Raise vbObjectError + 1001, "ProcessCitationStubs", _
-                        "Conflicting bibliography styles found in document stubs."
-                End If
-                m_documentStyleUrl = styleUrl
-            End If
-        Next i
+            Next i
+        End If
 
-        rng.Select
-        Dim fld As Field
-        Set fld = ActiveDocument.Fields.Add( _
-            Range:=Selection.Range, _
-            Type:=wdFieldEmpty, _
-            Text:="ADDIN ZOTERO_BIBL {""uncited"":[],""omitted"":[],""custom"":[]} CSL_BIBLIOGRAPHY", _
-            PreserveFormatting:=False)
+        ' Insert bibliography field via OOXML
+        Dim instrText As String
+        instrText = "ADDIN ZOTERO_BIBL {""uncited"":[],""omitted"":[],""custom"":[]} CSL_BIBLIOGRAPHY"
+        InsertZoteroField rng, instrText, "[Bibliography — click Zotero > Refresh]"
     Loop
 End Sub
 
@@ -339,11 +329,11 @@ End Sub
 ' Set Zotero document preferences via custom document property
 '----------------------------------------------------------------
 Private Sub SetZoteroPreferences()
-    Dim prefData As String
     Dim styleUrl As String
     styleUrl = m_documentStyleUrl
     If styleUrl = "" Then styleUrl = DEFAULT_STYLE_URL
 
+    Dim prefData As String
     prefData = "<data data-version=""3"" zotero-version=""7.0.0"">" & _
                "<session id=""" & GenerateCitationId() & """/>" & _
                "<style id=""" & styleUrl & """ locale=""en-US"" hasBibliography=""1"" bibliographyStyleHasBeenSet=""0""/>" & _
@@ -353,7 +343,6 @@ Private Sub SetZoteroPreferences()
                "</prefs>" & _
                "</data>"
 
-    ' Remove existing property if present
     On Error Resume Next
     ActiveDocument.CustomDocumentProperties("ZOTERO_PREF_1").Delete
     On Error GoTo 0
@@ -366,30 +355,27 @@ Private Sub SetZoteroPreferences()
 End Sub
 
 '----------------------------------------------------------------
-' HTTP GET helper using MSXML2
+' HTTP GET
 '----------------------------------------------------------------
 Private Function HttpGet(url As String) As String
     On Error GoTo ErrHandler
-
     Dim http As Object
     Set http = CreateObject("MSXML2.XMLHTTP")
     http.Open "GET", url, False
     http.setRequestHeader "Content-Type", "application/json"
     http.Send
-
     If http.Status = 200 Then
         HttpGet = http.responseText
     Else
         HttpGet = ""
     End If
     Exit Function
-
 ErrHandler:
     HttpGet = ""
 End Function
 
 '----------------------------------------------------------------
-' Fill in missing library context for legacy stubs
+' Library context helpers
 '----------------------------------------------------------------
 Private Function NormalizeLibrarySpec(librarySpec As String) As String
     If librarySpec <> "" Then
@@ -401,9 +387,6 @@ Private Function NormalizeLibrarySpec(librarySpec As String) As String
     End If
 End Function
 
-'----------------------------------------------------------------
-' Get the correct local API base URL for a library
-'----------------------------------------------------------------
 Private Function ApiBaseForLibrarySpec(librarySpec As String) As String
     If Left$(librarySpec, 6) = "group:" Then
         ApiBaseForLibrarySpec = ZOTERO_API_GROUP_PREFIX & Mid$(librarySpec, 7)
@@ -412,9 +395,6 @@ Private Function ApiBaseForLibrarySpec(librarySpec As String) As String
     End If
 End Function
 
-'----------------------------------------------------------------
-' Get the canonical Zotero item URI for a library
-'----------------------------------------------------------------
 Private Function ZoteroUriForLibrarySpec(librarySpec As String, key As String) As String
     If Left$(librarySpec, 6) = "group:" Then
         ZoteroUriForLibrarySpec = "http://zotero.org/groups/" & Mid$(librarySpec, 7) & "/items/" & key
@@ -423,44 +403,28 @@ Private Function ZoteroUriForLibrarySpec(librarySpec As String, key As String) A
     End If
 End Function
 
-'----------------------------------------------------------------
-' Map supported style names to Zotero CSL URLs
-'----------------------------------------------------------------
 Private Function StyleNameToUrl(styleName As String) As String
     Select Case LCase$(styleName)
-        Case "apa"
-            StyleNameToUrl = "http://www.zotero.org/styles/apa"
-        Case "chicago-author-date"
-            StyleNameToUrl = "http://www.zotero.org/styles/chicago-author-date"
-        Case "mla"
-            StyleNameToUrl = "http://www.zotero.org/styles/modern-language-association"
-        Case "ieee"
-            StyleNameToUrl = "http://www.zotero.org/styles/ieee"
-        Case "harvard"
-            StyleNameToUrl = "http://www.zotero.org/styles/harvard-cite-them-right"
-        Case Else
-            StyleNameToUrl = ""
+        Case "apa": StyleNameToUrl = "http://www.zotero.org/styles/apa"
+        Case "chicago-author-date": StyleNameToUrl = "http://www.zotero.org/styles/chicago-author-date"
+        Case "mla": StyleNameToUrl = "http://www.zotero.org/styles/modern-language-association"
+        Case "ieee": StyleNameToUrl = "http://www.zotero.org/styles/ieee"
+        Case "harvard": StyleNameToUrl = "http://www.zotero.org/styles/harvard-cite-them-right"
+        Case Else: StyleNameToUrl = ""
     End Select
 End Function
 
 '----------------------------------------------------------------
-' Extract CSL-JSON from Zotero API response
-' The API returns csljson as a JSON string wrapping an array
+' CSL-JSON extraction and fixing
 '----------------------------------------------------------------
 Private Function ExtractCslJson(itemJson As String) As String
-    ' Find "csljson": in the response
     Dim pos As Long
     pos = InStr(itemJson, """csljson"":")
-    If pos = 0 Then
-        ExtractCslJson = "{}"
-        Exit Function
-    End If
+    If pos = 0 Then ExtractCslJson = "{}": Exit Function
 
-    ' The value is a JSON string (starts with " after the colon)
     Dim valStart As Long
     valStart = InStr(pos, itemJson, ":") + 1
 
-    ' Skip whitespace
     Do While Mid(itemJson, valStart, 1) = " " Or Mid(itemJson, valStart, 1) = vbTab
         valStart = valStart + 1
     Loop
@@ -469,79 +433,51 @@ Private Function ExtractCslJson(itemJson As String) As String
     firstChar = Mid(itemJson, valStart, 1)
 
     If firstChar = """" Then
-        ' It's a JSON string — need to unescape and parse
         Dim strVal As String
         strVal = ExtractJsonString(itemJson, valStart)
-
-        ' The string contains a JSON array like [{...}]
-        ' Extract the first element
         If Left(Trim(strVal), 1) = "[" Then
-            Dim arrStart As Long
-            arrStart = InStr(strVal, "{")
-            If arrStart > 0 Then
-                Dim depth As Long: depth = 0
-                Dim arrEnd As Long
-                Dim c As String
-                Dim j As Long
-                For j = arrStart To Len(strVal)
-                    c = Mid(strVal, j, 1)
-                    If c = "{" Then depth = depth + 1
-                    If c = "}" Then
-                        depth = depth - 1
-                        If depth = 0 Then
-                            arrEnd = j
-                            Exit For
-                        End If
-                    End If
-                Next j
-                ExtractCslJson = Mid(strVal, arrStart, arrEnd - arrStart + 1)
-            Else
-                ExtractCslJson = "{}"
-            End If
+            ExtractCslJson = ExtractFirstJsonObject(strVal)
         Else
             ExtractCslJson = strVal
         End If
     ElseIf firstChar = "[" Then
-        ' It's already a JSON array — extract first element
-        Dim objStart As Long
-        objStart = InStr(valStart, itemJson, "{")
-        If objStart > 0 Then
-            Dim d As Long: d = 0
-            Dim objEnd As Long
-            Dim k As Long
-            For k = objStart To Len(itemJson)
-                Dim ch As String
-                ch = Mid(itemJson, k, 1)
-                If ch = "{" Then d = d + 1
-                If ch = "}" Then
-                    d = d - 1
-                    If d = 0 Then
-                        objEnd = k
-                        Exit For
-                    End If
-                End If
-            Next k
-            ExtractCslJson = Mid(itemJson, objStart, objEnd - objStart + 1)
-        Else
-            ExtractCslJson = "{}"
-        End If
+        ExtractCslJson = ExtractFirstJsonObject(Mid(itemJson, valStart))
     Else
         ExtractCslJson = "{}"
     End If
 End Function
 
-'----------------------------------------------------------------
-' Extract a JSON string value starting at the opening quote
-'----------------------------------------------------------------
+Private Function ExtractFirstJsonObject(jsonArray As String) As String
+    Dim objStart As Long
+    objStart = InStr(jsonArray, "{")
+    If objStart = 0 Then
+        ExtractFirstJsonObject = "{}"
+        Exit Function
+    End If
+
+    Dim depth As Long: depth = 0
+    Dim i As Long
+    For i = objStart To Len(jsonArray)
+        Dim c As String: c = Mid(jsonArray, i, 1)
+        If c = "{" Then depth = depth + 1
+        If c = "}" Then
+            depth = depth - 1
+            If depth = 0 Then
+                ExtractFirstJsonObject = Mid(jsonArray, objStart, i - objStart + 1)
+                Exit Function
+            End If
+        End If
+    Next i
+    ExtractFirstJsonObject = "{}"
+End Function
+
 Private Function ExtractJsonString(json As String, startPos As Long) As String
     Dim result As String: result = ""
-    Dim p As Long: p = startPos + 1 ' skip opening quote
+    Dim p As Long: p = startPos + 1
     Dim escaped As Boolean: escaped = False
 
     Do While p <= Len(json)
-        Dim c As String
-        c = Mid(json, p, 1)
-
+        Dim c As String: c = Mid(json, p, 1)
         If escaped Then
             Select Case c
                 Case """": result = result & """"
@@ -556,42 +492,30 @@ Private Function ExtractJsonString(json As String, startPos As Long) As String
         ElseIf c = "\" Then
             escaped = True
         ElseIf c = """" Then
-            Exit Do ' closing quote
+            Exit Do
         Else
             result = result & c
         End If
-
         p = p + 1
     Loop
-
     ExtractJsonString = result
 End Function
 
 '----------------------------------------------------------------
-' Fix the id field inside itemData to be numeric
+' Fix itemData.id: replace string id with numeric
 '----------------------------------------------------------------
 Private Function FixItemDataId(cslJson As String, numId As Long) As String
-    ' Replace the "id":"some-string" with "id":numId
     Dim pos As Long
     pos = InStr(cslJson, """id"":")
-    If pos = 0 Then
-        FixItemDataId = cslJson
-        Exit Function
-    End If
+    If pos = 0 Then FixItemDataId = cslJson: Exit Function
 
     Dim afterColon As Long
     afterColon = InStr(pos, cslJson, ":") + 1
-
-    ' Skip whitespace
     Do While Mid(cslJson, afterColon, 1) = " "
         afterColon = afterColon + 1
     Loop
 
-    Dim valChar As String
-    valChar = Mid(cslJson, afterColon, 1)
-
-    If valChar = """" Then
-        ' Find closing quote
+    If Mid(cslJson, afterColon, 1) = """" Then
         Dim closeQuote As Long
         closeQuote = InStr(afterColon + 1, cslJson, """")
         FixItemDataId = Left(cslJson, afterColon - 1) & CStr(numId) & Mid(cslJson, closeQuote + 1)
@@ -601,13 +525,68 @@ Private Function FixItemDataId(cslJson As String, numId As Long) As String
 End Function
 
 '----------------------------------------------------------------
-' Extract author/year for display text from CSL-JSON
+' Fix date-parts: convert string years to numbers
+' [["2025"]] → [[2025]], [["2025","3","15"]] → [[2025,3,15]]
+'----------------------------------------------------------------
+Private Function FixDateParts(cslJson As String) As String
+    Dim result As String: result = cslJson
+    Dim searchStr As String: searchStr = """date-parts"":"
+
+    Dim pos As Long
+    pos = InStr(result, searchStr)
+
+    Do While pos > 0
+        ' Find the [[ after date-parts
+        Dim bracketPos As Long
+        bracketPos = InStr(pos, result, "[[")
+        If bracketPos = 0 Then Exit Do
+
+        ' Find the matching ]]
+        Dim endBracket As Long
+        endBracket = InStr(bracketPos, result, "]]")
+        If endBracket = 0 Then Exit Do
+
+        ' Extract the content between [[ and ]]
+        Dim inner As String
+        inner = Mid(result, bracketPos + 2, endBracket - bracketPos - 2)
+
+        ' Remove quotes from numeric values: "2025" → 2025
+        Dim fixed As String: fixed = ""
+        Dim parts() As String
+        parts = Split(inner, ",")
+        Dim i As Long
+        For i = 0 To UBound(parts)
+            Dim val As String
+            val = Trim(parts(i))
+            ' Strip quotes if it's a quoted number
+            If Left(val, 1) = """" And Right(val, 1) = """" Then
+                Dim unquoted As String
+                unquoted = Mid(val, 2, Len(val) - 2)
+                If IsNumeric(unquoted) Then
+                    val = unquoted
+                End If
+            End If
+            If fixed <> "" Then fixed = fixed & ","
+            fixed = fixed & val
+        Next i
+
+        ' Replace in result
+        result = Left(result, bracketPos + 1) & fixed & Mid(result, endBracket)
+
+        ' Look for more date-parts
+        pos = InStr(endBracket, result, searchStr)
+    Loop
+
+    FixDateParts = result
+End Function
+
+'----------------------------------------------------------------
+' Extract display text from CSL-JSON
 '----------------------------------------------------------------
 Private Function ExtractDisplayText(cslJson As String) As String
     Dim author As String: author = "Unknown"
     Dim year As String: year = "n.d."
 
-    ' Simple extraction: find "family":"..."
     Dim famPos As Long
     famPos = InStr(cslJson, """family"":")
     If famPos > 0 Then
@@ -615,10 +594,11 @@ Private Function ExtractDisplayText(cslJson As String) As String
         famStart = InStr(famPos + 9, cslJson, """") + 1
         Dim famEnd As Long
         famEnd = InStr(famStart, cslJson, """")
-        author = Mid(cslJson, famStart, famEnd - famStart)
+        If famEnd > famStart Then
+            author = Mid(cslJson, famStart, famEnd - famStart)
+        End If
     End If
 
-    ' Find year in "date-parts":[[YYYY]]
     Dim dpPos As Long
     dpPos = InStr(cslJson, """date-parts""")
     If dpPos > 0 Then
@@ -626,6 +606,8 @@ Private Function ExtractDisplayText(cslJson As String) As String
         numPos = InStr(dpPos, cslJson, "[[")
         If numPos > 0 Then
             numPos = numPos + 2
+            ' Skip quote if present
+            If Mid(cslJson, numPos, 1) = """" Then numPos = numPos + 1
             Dim yearEnd As Long: yearEnd = numPos
             Do While yearEnd <= Len(cslJson) And IsNumeric(Mid(cslJson, yearEnd, 1))
                 yearEnd = yearEnd + 1
@@ -640,24 +622,22 @@ Private Function ExtractDisplayText(cslJson As String) As String
 End Function
 
 '----------------------------------------------------------------
-' Generate an 8-character random alphanumeric string
+' Generate 8-char random alphanumeric string
 '----------------------------------------------------------------
 Private Function GenerateCitationId() As String
     Dim chars As String
     chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
     Dim result As String: result = ""
     Dim i As Long
-
     Randomize
     For i = 1 To 8
         result = result & Mid(chars, Int(Rnd() * Len(chars)) + 1, 1)
     Next i
-
     GenerateCitationId = result
 End Function
 
 '----------------------------------------------------------------
-' Convert item key to deterministic numeric ID (same as TypeScript)
+' Convert item key to deterministic numeric ID
 '----------------------------------------------------------------
 Private Function KeyToNumericId(key As String) As Long
     Dim hash As Double: hash = 0
@@ -665,13 +645,12 @@ Private Function KeyToNumericId(key As String) As Long
     For i = 1 To Len(key)
         hash = hash * 31 + Asc(Mid(key, i, 1))
     Next i
-    ' Reduce to positive Long range
     hash = hash - Int(hash / 2147483647#) * 2147483647#
     KeyToNumericId = CLng(Abs(hash))
 End Function
 
 '----------------------------------------------------------------
-' Escape a string for JSON
+' Escape string for JSON
 '----------------------------------------------------------------
 Private Function JsonEscape(s As String) As String
     Dim result As String: result = s
@@ -684,16 +663,25 @@ Private Function JsonEscape(s As String) As String
 End Function
 
 '----------------------------------------------------------------
+' Escape string for XML (used inside OOXML instrText)
+'----------------------------------------------------------------
+Private Function EscapeXml(s As String) As String
+    Dim result As String: result = s
+    result = Replace(result, "&", "&amp;")
+    result = Replace(result, "<", "&lt;")
+    result = Replace(result, ">", "&gt;")
+    result = Replace(result, """", "&quot;")
+    EscapeXml = result
+End Function
+
+'----------------------------------------------------------------
 ' Decode percent-encoded stub values
 '----------------------------------------------------------------
 Private Function UrlDecode(value As String) As String
     Dim result As String: result = ""
     Dim i As Long: i = 1
-
     Do While i <= Len(value)
-        Dim ch As String
-        ch = Mid$(value, i, 1)
-
+        Dim ch As String: ch = Mid$(value, i, 1)
         If ch = "%" And i + 2 <= Len(value) Then
             result = result & Chr$(CLng("&H" & Mid$(value, i + 1, 2)))
             i = i + 3
@@ -702,6 +690,5 @@ Private Function UrlDecode(value As String) As String
             i = i + 1
         End If
     Loop
-
     UrlDecode = result
 End Function
