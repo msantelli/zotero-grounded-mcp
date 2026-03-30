@@ -103,6 +103,15 @@ describe("buildFieldCodeXml", () => {
     expect(xml).toContain("zotero.org/users/1234567/items/ABCD1234");
   });
 
+  it("uses group URI for group libraries", () => {
+    const xml = buildFieldCodeXml(
+      [{ item: journalArticle }],
+      { userId: "1234567", libraryType: "group", groupId: "98765" }
+    );
+    expect(xml).toContain("zotero.org/groups/98765/items/ABCD1234");
+    expect(xml).not.toContain("/users/");
+  });
+
   it("includes display text", () => {
     const xml = buildFieldCodeXml(
       [{ item: journalArticle }],

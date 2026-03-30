@@ -76,6 +76,8 @@ export function buildDisplayText(csljson: Record<string, unknown>): string {
 
 export interface FieldCodeOptions {
   userId: string;
+  libraryType?: "user" | "group";
+  groupId?: string;
   styleUrl?: string;
   locator?: string;
   locatorLabel?: string;
@@ -105,7 +107,11 @@ export function buildFieldCodeXml(
     ({ item, locator, prefix, suffix, suppressAuthor }) => {
       const csljson = item.csljson ?? {};
       const key = item.data.key;
-      const uri = `http://zotero.org/users/${options.userId}/items/${key}`;
+      const librarySegment =
+        options.libraryType === "group"
+          ? `groups/${options.groupId}`
+          : `users/${options.userId}`;
+      const uri = `http://zotero.org/${librarySegment}/items/${key}`;
 
       const citItem: Record<string, unknown> = {
         id: keyToNumericId(key),

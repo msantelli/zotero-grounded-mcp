@@ -318,20 +318,22 @@ export class ZoteroClient {
   async getItems(keys: string[]): Promise<ZoteroItem[]> {
     if (keys.length === 0) return [];
 
-    // Check cache for each key, collect misses
-    const results: ZoteroItem[] = [];
+    // Collect cached items and identify misses
+    const itemMap = new Map<string, ZoteroItem>();
     const missingKeys: string[] = [];
     for (const key of keys) {
       const cached = this.getCached(key);
       if (cached) {
-        results.push(cached);
+        itemMap.set(key, cached);
       } else {
         missingKeys.push(key);
       }
     }
 
+    // Fetch missing items
     if (missingKeys.length === 1) {
-      results.push(await this.getItem(missingKeys[0]));
+      const item = await this.getItem(missingKeys[0]);
+      itemMap.set(item.key, item);
     } else if (missingKeys.length > 1) {
       const params = new URLSearchParams();
       params.set("itemKey", missingKeys.join(","));
@@ -346,12 +348,15 @@ export class ZoteroClient {
         if (keySet.has(item.key)) {
           const normalized = this.normalizeCslJson(item);
           this.putCache(normalized);
-          results.push(normalized);
+          itemMap.set(normalized.key, normalized);
         }
       }
     }
 
-    return results;
+    // Return in the same order as the input keys
+    return keys
+      .map((key) => itemMap.get(key))
+      .filter((item): item is ZoteroItem => item !== undefined);
   }
 
   /**

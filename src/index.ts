@@ -445,7 +445,12 @@ server.tool(
       const items = await client.getItems(keys);
       const userId = await client.getUserId();
 
-      const options: FieldCodeOptions = { userId, styleUrl: style };
+      const options: FieldCodeOptions = {
+        userId,
+        libraryType,
+        groupId: process.env.ZOTERO_GROUP_ID,
+        styleUrl: style,
+      };
       const locatorMap = new Map((locators ?? []).map((l) => [l.key, l]));
       const sections: string[] = [];
 
