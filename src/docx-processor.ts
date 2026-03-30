@@ -8,9 +8,11 @@
  * expects.
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { inflateRawSync, deflateRawSync } from "node:zlib";
+import { readFileSync, writeFileSync, mkdirSync, rmSync, mkdtempSync } from "node:fs";
+import { resolve, join, dirname } from "node:path";
+import { tmpdir } from "node:os";
+import { inflateRawSync } from "node:zlib";
+import { execFileSync } from "node:child_process";
 
 // We use Node's built-in zlib + a minimal ZIP implementation
 // to avoid adding a dependency. .docx files are ZIP archives.
@@ -75,7 +77,7 @@ export async function processDocxStubs(
     const instrText = `ADDIN ZOTERO_BIBL {&quot;uncited&quot;:[],&quot;omitted&quot;:[],&quot;custom&quot;:[]} CSL_BIBLIOGRAPHY`;
     const displayText = "[Bibliography — click Zotero &gt; Refresh]";
 
-    return buildFieldXml(instrText, displayText);
+    return `</w:t></w:r>${buildFieldXml(instrText, displayText)}<w:r><w:t>`;
   });
 
   // Process {{CITE:...}} stubs — need async for API calls
@@ -146,7 +148,10 @@ export async function processDocxStubs(
     const instrText = `ADDIN ZOTERO_ITEM CSL_CITATION ${xmlEscape(cslCitation)}`;
     const fieldXml = buildFieldXml(instrText, xmlEscape(fullDisplay));
 
-    xml = xml.replace(cite.fullMatch, fieldXml);
+    // The stub may be inside a <w:t> element. We need to close the
+    // text run before the field and reopen it after, so the field XML
+    // sits between runs (not nested inside <w:t>).
+    xml = xml.replace(cite.fullMatch, `</w:t></w:r>${fieldXml}<w:r><w:t>`);
     citationCount++;
   }
 
@@ -156,9 +161,26 @@ export async function processDocxStubs(
   // Ensure docProps/custom.xml has Zotero prefs
   ensureZoteroPrefs(entries);
 
-  // Write the output
-  const output = writeZip(entries);
-  writeFileSync(absOutput, output);
+  // Write the output using a temp directory + system zip command
+  // (custom ZIP writers produce files Word can't reliably open)
+  const tmpDir = mkdtempSync(join(tmpdir(), "zotero-docx-"));
+  try {
+    for (const entry of entries) {
+      const entryPath = join(tmpDir, entry.name);
+      mkdirSync(dirname(entryPath), { recursive: true });
+      if (!entry.name.endsWith("/")) {
+        writeFileSync(entryPath, entry.data);
+      }
+    }
+    // Remove output file first (zip -r appends if it exists)
+    try { rmSync(absOutput); } catch { /* ok if doesn't exist */ }
+    execFileSync("zip", ["-r", "-X", absOutput, ...entries.map((e) => e.name)], {
+      cwd: tmpDir,
+      stdio: "ignore",
+    });
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
 
   return { citations: citationCount, bibliography: hasBibliography };
 }
@@ -319,109 +341,6 @@ function readZip(data: Buffer): ZipEntry[] {
   }
 
   return entries;
-}
-
-function writeZip(entries: ZipEntry[]): Buffer {
-  const parts: Buffer[] = [];
-  const centralDir: Buffer[] = [];
-  let offset = 0;
-
-  for (const entry of entries) {
-    const nameBuffer = Buffer.from(entry.name, "utf-8");
-    const isStorable =
-      entry.name.endsWith("/") || entry.data.length === 0;
-
-    let compData: Buffer;
-    let compMethod: number;
-
-    if (isStorable) {
-      compData = entry.data;
-      compMethod = 0;
-    } else {
-      compData = deflateRawSync(entry.data);
-      compMethod = 8;
-      // If deflate is larger, store instead
-      if (compData.length >= entry.data.length) {
-        compData = entry.data;
-        compMethod = 0;
-      }
-    }
-
-    // Local file header
-    const localHeader = Buffer.alloc(30 + nameBuffer.length);
-    localHeader.writeUInt32LE(0x04034b50, 0); // signature
-    localHeader.writeUInt16LE(20, 4); // version needed
-    localHeader.writeUInt16LE(0, 6); // flags
-    localHeader.writeUInt16LE(compMethod, 8); // compression
-    localHeader.writeUInt16LE(0, 10); // mod time
-    localHeader.writeUInt16LE(0, 12); // mod date
-    // CRC32
-    const crc = crc32(entry.data);
-    localHeader.writeUInt32LE(crc, 14);
-    localHeader.writeUInt32LE(compData.length, 18); // compressed size
-    localHeader.writeUInt32LE(entry.data.length, 22); // uncompressed size
-    localHeader.writeUInt16LE(nameBuffer.length, 26); // name length
-    localHeader.writeUInt16LE(0, 28); // extra length
-    nameBuffer.copy(localHeader, 30);
-
-    parts.push(localHeader, compData);
-
-    // Central directory entry
-    const cdEntry = Buffer.alloc(46 + nameBuffer.length);
-    cdEntry.writeUInt32LE(0x02014b50, 0); // signature
-    cdEntry.writeUInt16LE(20, 4); // version made by
-    cdEntry.writeUInt16LE(20, 6); // version needed
-    cdEntry.writeUInt16LE(0, 8); // flags
-    cdEntry.writeUInt16LE(compMethod, 10); // compression
-    cdEntry.writeUInt16LE(0, 12); // mod time
-    cdEntry.writeUInt16LE(0, 14); // mod date
-    cdEntry.writeUInt32LE(crc, 16);
-    cdEntry.writeUInt32LE(compData.length, 20);
-    cdEntry.writeUInt32LE(entry.data.length, 24);
-    cdEntry.writeUInt16LE(nameBuffer.length, 28);
-    cdEntry.writeUInt16LE(0, 30); // extra length
-    cdEntry.writeUInt16LE(0, 32); // comment length
-    cdEntry.writeUInt16LE(0, 34); // disk number
-    cdEntry.writeUInt16LE(0, 36); // internal attrs
-    cdEntry.writeUInt32LE(0, 38); // external attrs
-    cdEntry.writeUInt32LE(offset, 42); // local header offset
-    nameBuffer.copy(cdEntry, 46);
-
-    centralDir.push(cdEntry);
-    offset += localHeader.length + compData.length;
-  }
-
-  const cdOffset = offset;
-  let cdSize = 0;
-  for (const cd of centralDir) {
-    parts.push(cd);
-    cdSize += cd.length;
-  }
-
-  // End of central directory
-  const eocd = Buffer.alloc(22);
-  eocd.writeUInt32LE(0x06054b50, 0); // signature
-  eocd.writeUInt16LE(0, 4); // disk number
-  eocd.writeUInt16LE(0, 6); // cd disk
-  eocd.writeUInt16LE(entries.length, 8); // entries on disk
-  eocd.writeUInt16LE(entries.length, 10); // total entries
-  eocd.writeUInt32LE(cdSize, 12); // cd size
-  eocd.writeUInt32LE(cdOffset, 16); // cd offset
-  eocd.writeUInt16LE(0, 20); // comment length
-  parts.push(eocd);
-
-  return Buffer.concat(parts);
-}
-
-function crc32(data: Buffer): number {
-  let crc = 0xffffffff;
-  for (let i = 0; i < data.length; i++) {
-    crc ^= data[i];
-    for (let j = 0; j < 8; j++) {
-      crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
-    }
-  }
-  return (crc ^ 0xffffffff) >>> 0;
 }
 
 export { keyToNumericId };
