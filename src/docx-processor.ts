@@ -327,6 +327,11 @@ export function readZip(data: Buffer): ZipEntry[] {
 
     const name = data.slice(pos + 46, pos + 46 + nameLen).toString("utf-8");
 
+    // Reject path traversal attempts
+    if (name.includes("..") || name.startsWith("/") || name.startsWith("\\")) {
+      throw new Error(`Invalid ZIP entry name: ${name}`);
+    }
+
     // Read from local header to get actual data
     const localPos = localHeaderOffset;
     const localNameLen = data.readUInt16LE(localPos + 26);

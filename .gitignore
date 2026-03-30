@@ -11,3 +11,11 @@ dist/
 
 # Package tarballs
 *.tgz
+
+# Working documents
+*.docx
+*.doc
+*.xlsx
+
+# Environment
+.env*
