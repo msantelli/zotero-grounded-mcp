@@ -155,31 +155,24 @@ Private Function ProcessCiteStubs() As Long
 End Function
 
 '----------------------------------------------------------------
-' Insert a Zotero field code with proper structure:
+' Insert a Zotero field code with proper 5-part structure:
 ' begin → instrText → separate → display text → end
 '
-' Uses Fields.Add to create the field, then sets the Code.Text
-' to our compact JSON (overwriting Word's reformatted version)
-' and sets Result.Text to the display text.
+' Uses raw Unicode field characters (Chr(19)/Chr(20)/Chr(21))
+' inserted directly into the document. This bypasses Fields.Add
+' which doesn't create the separate+result structure for ADDIN
+' fields and reformats instrText with tabs.
+'
+' Chr(19) = field begin mark
+' Chr(20) = field separate mark (between code and result)
+' Chr(21) = field end mark
 '----------------------------------------------------------------
 Private Sub InsertZoteroField(rng As Range, instrText As String, displayText As String)
-    ' Create the field — Word will auto-create begin/separate/end structure
-    Dim fld As Field
-    Set fld = ActiveDocument.Fields.Add( _
-        Range:=rng, _
-        Type:=wdFieldEmpty, _
-        Text:=instrText, _
-        PreserveFormatting:=False)
+    rng.Select
 
-    ' Overwrite the field code text with our compact version
-    ' (Fields.Add may have reformatted it with tabs/linebreaks)
-    fld.Code.Text = " " & instrText & " "
-
-    ' Set the display text (the visible part the reader sees)
-    fld.result.Text = displayText
-
-    ' Lock the field so casual updates don't clear the result
-    fld.Locked = True
+    ' Insert: begin + instrText + separate + displayText + end
+    ' as a single text block using Word's special field characters
+    Selection.TypeText Text:=Chr(19) & " " & instrText & " " & Chr(20) & displayText & Chr(21)
 End Sub
 
 '----------------------------------------------------------------
@@ -524,52 +517,44 @@ End Function
 ' [["2025"]] → [[2025]], [["2025","3","15"]] → [[2025,3,15]]
 '----------------------------------------------------------------
 Private Function FixDateParts(cslJson As String) As String
+    ' Simple approach: find patterns like "NNNN" inside date-parts arrays
+    ' and strip the quotes. Works by scanning for [[ after "date-parts"
+    ' and replacing quoted numbers with bare numbers.
     Dim result As String: result = cslJson
-    Dim searchStr As String: searchStr = """date-parts"":"
 
-    Dim pos As Long
-    pos = InStr(result, searchStr)
+    ' Use RegExp for reliable pattern matching
+    Dim re As Object
+    Set re = CreateObject("VBScript.RegExp")
+    re.Global = True
+    re.Pattern = "\[""(\d+)""\]"
 
-    Do While pos > 0
-        ' Find the [[ after date-parts
-        Dim bracketPos As Long
-        bracketPos = InStr(pos, result, "[[")
-        If bracketPos = 0 Then Exit Do
+    ' Only apply within the date-parts region
+    Dim dpPos As Long
+    dpPos = InStr(result, """date-parts""")
 
-        ' Find the matching ]]
-        Dim endBracket As Long
-        endBracket = InStr(bracketPos, result, "]]")
-        If endBracket = 0 Then Exit Do
+    Do While dpPos > 0
+        ' Find the array start
+        Dim arrStart As Long
+        arrStart = InStr(dpPos, result, "[[")
+        If arrStart = 0 Then Exit Do
 
-        ' Extract the content between [[ and ]]
-        Dim inner As String
-        inner = Mid(result, bracketPos + 2, endBracket - bracketPos - 2)
+        Dim arrEnd As Long
+        arrEnd = InStr(arrStart, result, "]]")
+        If arrEnd = 0 Then Exit Do
 
-        ' Remove quotes from numeric values: "2025" → 2025
-        Dim fixed As String: fixed = ""
-        Dim parts() As String
-        parts = Split(inner, ",")
-        Dim i As Long
-        For i = 0 To UBound(parts)
-            Dim val As String
-            val = Trim(parts(i))
-            ' Strip quotes if it's a quoted number
-            If Left(val, 1) = """" And Right(val, 1) = """" Then
-                Dim unquoted As String
-                unquoted = Mid(val, 2, Len(val) - 2)
-                If IsNumeric(unquoted) Then
-                    val = unquoted
-                End If
-            End If
-            If fixed <> "" Then fixed = fixed & ","
-            fixed = fixed & val
-        Next i
+        ' Extract the full date-parts value including brackets
+        Dim dateRegion As String
+        dateRegion = Mid(result, arrStart, arrEnd - arrStart + 2)
 
-        ' Replace in result
-        result = Left(result, bracketPos + 1) & fixed & Mid(result, endBracket)
+        ' Replace ["NNNN"] with [NNNN] within this region
+        Dim fixedRegion As String
+        fixedRegion = re.Replace(dateRegion, "[$1]")
 
-        ' Look for more date-parts
-        pos = InStr(endBracket, result, searchStr)
+        ' Put it back
+        result = Left(result, arrStart - 1) & fixedRegion & Mid(result, arrEnd + 2)
+
+        ' Look for more
+        dpPos = InStr(arrStart + Len(fixedRegion), result, """date-parts""")
     Loop
 
     FixDateParts = result
