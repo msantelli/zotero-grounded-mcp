@@ -90,6 +90,15 @@ describe("ZoteroClient — local mode", () => {
       const url = mockFetch.mock.calls[0][0] as string;
       expect(url).toContain("/items/ABCD1234");
     });
+
+    it("fetches items from an explicit group library in local mode", async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse(journalArticle));
+
+      await client.getItemForLibrarySpec("ABCD1234", "group:98765");
+
+      const url = mockFetch.mock.calls[0][0] as string;
+      expect(url).toContain("http://localhost:23119/api/groups/98765/items/ABCD1234");
+    });
   });
 
   describe("getItems", () => {
@@ -245,6 +254,20 @@ describe("ZoteroClient — web mode", () => {
     const headers = opts.headers as Record<string, string>;
     expect(headers["Zotero-API-Key"]).toBe("mykey");
     expect(headers["Zotero-API-Version"]).toBe("3");
+  });
+
+  it("fetches items from an explicit group library in web mode", async () => {
+    const client = new ZoteroClient({
+      mode: "web",
+      userId: "12345",
+      apiKey: "mykey",
+    });
+    mockFetch.mockResolvedValueOnce(mockResponse(journalArticle));
+
+    await client.getItemForLibrarySpec("ABCD1234", "group:98765");
+
+    const url = mockFetch.mock.calls[0][0] as string;
+    expect(url).toContain("https://api.zotero.org/groups/98765/items/ABCD1234");
   });
 });
 

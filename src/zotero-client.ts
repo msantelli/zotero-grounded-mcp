@@ -78,6 +78,10 @@ export type ZoteroLibraryContext =
   | { type: "user"; userId: string }
   | { type: "group"; groupId: string };
 
+type ParsedLibrarySpec =
+  | { type: "user"; id: string }
+  | { type: "group"; id: string };
+
 export class ZoteroClient {
   private config: ZoteroConfig;
   private baseUrl: string;
@@ -131,6 +135,52 @@ export class ZoteroClient {
 
   private putCache(item: ZoteroItem): void {
     this.itemCache.set(item.key, { item, time: Date.now() });
+  }
+
+  private getCachedForLibrary(key: string, librarySpec: string): ZoteroItem | undefined {
+    return this.getCached(`${librarySpec}::${key}`);
+  }
+
+  private putCacheForLibrary(item: ZoteroItem, librarySpec: string): void {
+    this.itemCache.set(`${librarySpec}::${item.key}`, {
+      item,
+      time: Date.now(),
+    });
+  }
+
+  private parseLibrarySpec(librarySpec: string): ParsedLibrarySpec {
+    const match = /^(user|group):(.+)$/.exec(librarySpec);
+    if (!match) {
+      throw new Error(`Invalid library spec: ${librarySpec}`);
+    }
+    return match[1] === "group"
+      ? { type: "group", id: match[2] }
+      : { type: "user", id: match[2] };
+  }
+
+  private getBaseUrlForLibrarySpec(librarySpec: string): string {
+    const parsed = this.parseLibrarySpec(librarySpec);
+    if (this.config.mode === "local") {
+      const port = this.config.localPort ?? 23119;
+      const prefix =
+        parsed.type === "group" ? `/api/groups/${parsed.id}` : "/api/users/0";
+      return `http://localhost:${port}${prefix}`;
+    }
+
+    const prefix =
+      parsed.type === "group" ? `/groups/${parsed.id}` : `/users/${parsed.id}`;
+    return `https://api.zotero.org${prefix}`;
+  }
+
+  private getConfiguredLibrarySpec(): string {
+    if (this.config.libraryType === "group") {
+      if (!this.config.groupId) {
+        throw new Error("Group library mode requires groupId");
+      }
+      return `group:${this.config.groupId}`;
+    }
+
+    return `user:${this.config.userId ?? "0"}`;
   }
 
   /**
@@ -216,7 +266,8 @@ export class ZoteroClient {
    * Get a single item by its key.
    */
   async getItem(key: string): Promise<ZoteroItem> {
-    const cached = this.getCached(key);
+    const cacheKey = `${this.getConfiguredLibrarySpec()}::${key}`;
+    const cached = this.getCached(cacheKey);
     if (cached) return cached;
 
     const params = new URLSearchParams();
@@ -226,7 +277,27 @@ export class ZoteroClient {
     const url = `${this.baseUrl}/items/${key}?${params}`;
     const response = await this.request(url);
     const item = this.normalizeCslJson((await response.json()) as ZoteroItem);
-    this.putCache(item);
+    this.itemCache.set(cacheKey, { item, time: Date.now() });
+    return item;
+  }
+
+  /**
+   * Get a single item by key from an explicit user/group library context.
+   * This is used by .docx processing where a single document may mix libraries.
+   */
+  async getItemForLibrarySpec(key: string, librarySpec: string): Promise<ZoteroItem> {
+    const cached = this.getCachedForLibrary(key, librarySpec);
+    if (cached) return cached;
+
+    const params = new URLSearchParams();
+    params.set("format", "json");
+    params.set("include", "data,csljson");
+
+    const baseUrl = this.getBaseUrlForLibrarySpec(librarySpec);
+    const url = `${baseUrl}/items/${key}?${params}`;
+    const response = await this.request(url);
+    const item = this.normalizeCslJson((await response.json()) as ZoteroItem);
+    this.putCacheForLibrary(item, librarySpec);
     return item;
   }
 
@@ -321,12 +392,13 @@ export class ZoteroClient {
    */
   async getItems(keys: string[]): Promise<ZoteroItem[]> {
     if (keys.length === 0) return [];
+    const librarySpec = this.getConfiguredLibrarySpec();
 
     // Collect cached items and identify misses
     const itemMap = new Map<string, ZoteroItem>();
     const missingKeys: string[] = [];
     for (const key of keys) {
-      const cached = this.getCached(key);
+      const cached = this.getCached(`${librarySpec}::${key}`);
       if (cached) {
         itemMap.set(key, cached);
       } else {
@@ -351,7 +423,7 @@ export class ZoteroClient {
       for (const item of items) {
         if (keySet.has(item.key)) {
           const normalized = this.normalizeCslJson(item);
-          this.putCache(normalized);
+          this.putCacheForLibrary(normalized, librarySpec);
           itemMap.set(normalized.key, normalized);
         }
       }

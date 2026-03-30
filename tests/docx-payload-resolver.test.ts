@@ -48,4 +48,16 @@ describe("docx payload resolver", () => {
     expect(first.cslJson).toBe(second.cslJson);
     expect(first.displayText).toBe("(Brandom, 1994)");
   });
+
+  it("passes the normalized library spec to the item fetcher", async () => {
+    const getItem = vi.fn().mockResolvedValue(journalArticle);
+    const resolvePayload = createDocxItemPayloadResolver({
+      defaultLibrarySpec: "user:1234567",
+      getItem,
+    });
+
+    await resolvePayload("ABCD1234", "group:98765");
+
+    expect(getItem).toHaveBeenCalledWith("ABCD1234", "group:98765");
+  });
 });

@@ -10,7 +10,7 @@ export interface DocxItemPayload {
 
 export function createDocxItemPayloadResolver(options: {
   defaultLibrarySpec: string;
-  getItem: (key: string) => Promise<ZoteroItem>;
+  getItem: (key: string, librarySpec: string) => Promise<ZoteroItem>;
 }): (key: string, librarySpec: string) => Promise<DocxItemPayload> {
   const cache = new Map<string, Promise<DocxItemPayload>>();
 
@@ -23,7 +23,7 @@ export function createDocxItemPayloadResolver(options: {
     }
 
     const payloadPromise = options
-      .getItem(key)
+      .getItem(key, spec)
       .then((item) => buildDocxItemPayload(item, spec))
       .catch((error) => {
         cache.delete(cacheKey);

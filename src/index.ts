@@ -39,7 +39,7 @@ import {
   buildCitationStub,
   isSupportedBibliographyStyle,
 } from "./citation-stubs.js";
-import { createDocxItemPayloadResolver } from "./docx-payload-resolver.js";
+import { createDocxProcessingContext } from "./docx-workflow.js";
 import { serverVersion } from "./server-version.js";
 
 // --- Config from env ---
@@ -413,7 +413,7 @@ server.tool(
 // ──────────────────────────────────────────
 server.tool(
   "zotero_cite_stub",
-  `Generate validated citation stubs for use in documents. Each stub references a real Zotero item — if any key doesn't exist, the tool returns an error. Use these stubs in .docx documents; the user runs a Word macro to convert them into live Zotero citations.
+  `Generate validated citation stubs for use in documents. Each stub references a real Zotero item — if any key doesn't exist, the tool returns an error. Use these stubs in .docx documents, then run zotero_process_docx to convert them into live Zotero citations.
 
 Stub format:
   {{CITE:KEY|lib=user:12345}} — simple citation
@@ -453,7 +453,7 @@ IMPORTANT: Always call this tool to get stubs instead of writing them by hand. T
           content: [
             {
               type: "text",
-              text: "Error: bibliographyStyle requires bibliography=true so the Word macro can store the document style in the bibliography stub.",
+              text: "Error: bibliographyStyle requires bibliography=true so zotero_process_docx can store the document style in the bibliography stub.",
             },
           ],
           isError: true,
@@ -528,7 +528,7 @@ IMPORTANT: Always call this tool to get stubs instead of writing them by hand. T
       }
 
       lines.push("\n---\n");
-      lines.push("Copy these stubs into your document. After saving as .docx, run the **Process Citation Stubs** macro in Word to convert them to live Zotero citations.");
+      lines.push("Copy these stubs into your document. After saving as .docx, run `zotero_process_docx` to convert them to live Zotero citations.");
 
       return { content: [{ type: "text", text: lines.join("\n") }] };
     } catch (error) {
@@ -557,15 +557,7 @@ Give this tool the file path and it does everything: fetches item data from Zote
   },
   async ({ inputPath, outputPath }) => {
     try {
-      const libCtx = await client.getLibraryContext();
-      const defaultLibrarySpec =
-        libCtx.type === "group"
-          ? `group:${libCtx.groupId}`
-          : `user:${libCtx.userId}`;
-      const resolveDocxItemPayload = createDocxItemPayloadResolver({
-        defaultLibrarySpec,
-        getItem: (key: string) => client.getItem(key),
-      });
+      const { resolveDocxItemPayload } = await createDocxProcessingContext(client);
 
       const result = await processDocxStubs(
         inputPath,

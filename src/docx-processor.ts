@@ -13,14 +13,20 @@ import { resolve, join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { inflateRawSync } from "node:zlib";
 import { execFileSync } from "node:child_process";
+import {
+  bibliographyStyleToUrl,
+  isSupportedBibliographyStyle,
+} from "./citation-stubs.js";
 
 // We use Node's built-in zlib + a minimal ZIP implementation
 // to avoid adding a dependency. .docx files are ZIP archives.
 
-interface ZipEntry {
+export interface ZipEntry {
   name: string;
   data: Buffer;
 }
+
+const DEFAULT_BIBLIOGRAPHY_STYLE_URL = bibliographyStyleToUrl("apa");
 
 /**
  * Process a .docx file: replace citation stubs with Zotero field codes.
@@ -58,6 +64,7 @@ export async function processDocxStubs(
   let xml = docEntry.data.toString("utf-8");
   let citationCount = 0;
   let hasBibliography = false;
+  let bibliographyStyleUrl: string | undefined;
 
   // Process {{BIBLIOGRAPHY...}} first (simpler, no API calls needed)
   const bibRegex = /\{\{BIBLIOGRAPHY[^}]*\}\}/g;
@@ -65,13 +72,21 @@ export async function processDocxStubs(
     hasBibliography = true;
 
     // Parse style from stub
-    let styleUrl = "http://www.zotero.org/styles/apa";
+    let styleUrl = DEFAULT_BIBLIOGRAPHY_STYLE_URL;
     const styleMatch = match.match(/style=([^|}]+)/);
     if (styleMatch) {
-      const styleName = decodeURIComponent(styleMatch[1]);
-      const url = styleNameToUrl(styleName);
-      if (url) styleUrl = url;
+      const styleName = decodeURIComponent(styleMatch[1]).toLowerCase();
+      if (isSupportedBibliographyStyle(styleName)) {
+        styleUrl = bibliographyStyleToUrl(styleName);
+      }
     }
+
+    if (bibliographyStyleUrl && bibliographyStyleUrl !== styleUrl) {
+      throw new Error(
+        "Conflicting bibliography styles found in document. Use a single style for all {{BIBLIOGRAPHY}} stubs."
+      );
+    }
+    bibliographyStyleUrl = styleUrl;
 
     // Build bibliography field XML
     const instrText = `ADDIN ZOTERO_BIBL {&quot;uncited&quot;:[],&quot;omitted&quot;:[],&quot;custom&quot;:[]} CSL_BIBLIOGRAPHY`;
@@ -159,7 +174,7 @@ export async function processDocxStubs(
   docEntry.data = Buffer.from(xml, "utf-8");
 
   // Ensure docProps/custom.xml has Zotero prefs
-  ensureZoteroPrefs(entries);
+  ensureZoteroPrefs(entries, bibliographyStyleUrl ?? DEFAULT_BIBLIOGRAPHY_STYLE_URL);
 
   // Write the output using a temp directory + system zip command
   // (custom ZIP writers produce files Word can't reliably open)
@@ -197,7 +212,7 @@ function buildFieldXml(instrText: string, displayText: string): string {
   );
 }
 
-function ensureZoteroPrefs(entries: ZipEntry[]): void {
+function ensureZoteroPrefs(entries: ZipEntry[], styleUrl: string): void {
   const customXmlEntry = entries.find(
     (e) => e.name === "docProps/custom.xml"
   );
@@ -205,7 +220,7 @@ function ensureZoteroPrefs(entries: ZipEntry[]): void {
   const prefData =
     `&lt;data data-version=&quot;3&quot; zotero-version=&quot;7.0.0&quot;&gt;` +
     `&lt;session id=&quot;${randomId()}&quot;/&gt;` +
-    `&lt;style id=&quot;http://www.zotero.org/styles/apa&quot; locale=&quot;en-US&quot; hasBibliography=&quot;1&quot; bibliographyStyleHasBeenSet=&quot;0&quot;/&gt;` +
+    `&lt;style id=&quot;${styleUrl}&quot; locale=&quot;en-US&quot; hasBibliography=&quot;1&quot; bibliographyStyleHasBeenSet=&quot;0&quot;/&gt;` +
     `&lt;prefs&gt;` +
     `&lt;pref name=&quot;fieldType&quot; value=&quot;Field&quot;/&gt;` +
     `&lt;pref name=&quot;automaticJournalAbbreviations&quot; value=&quot;true&quot;/&gt;` +
@@ -213,9 +228,16 @@ function ensureZoteroPrefs(entries: ZipEntry[]): void {
     `&lt;/data&gt;`;
 
   if (customXmlEntry) {
-    // Add ZOTERO_PREF_1 if not present
     let customXml = customXmlEntry.data.toString("utf-8");
-    if (!customXml.includes("ZOTERO_PREF_1")) {
+    const existingPrefRegex =
+      /<property\b[^>]*name="ZOTERO_PREF_1"[^>]*>\s*<vt:lpwstr>[\s\S]*?<\/vt:lpwstr>\s*<\/property>/;
+    if (existingPrefRegex.test(customXml)) {
+      const replacement =
+        `<property fmtid="{D5CDD505-2E9C-101B-9397-08002B2CF9AE}" pid="2" name="ZOTERO_PREF_1">` +
+        `<vt:lpwstr>${prefData}</vt:lpwstr></property>`;
+      customXml = customXml.replace(existingPrefRegex, replacement);
+      customXmlEntry.data = Buffer.from(customXml, "utf-8");
+    } else {
       const insertPoint = customXml.lastIndexOf("</Properties>");
       if (insertPoint > 0) {
         const prop =
@@ -266,22 +288,11 @@ function xmlEscape(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
-function styleNameToUrl(name: string): string | null {
-  const map: Record<string, string> = {
-    apa: "http://www.zotero.org/styles/apa",
-    "chicago-author-date": "http://www.zotero.org/styles/chicago-author-date",
-    mla: "http://www.zotero.org/styles/modern-language-association",
-    ieee: "http://www.zotero.org/styles/ieee",
-    harvard: "http://www.zotero.org/styles/harvard-cite-them-right",
-  };
-  return map[name.toLowerCase()] ?? null;
-}
-
 // ── Minimal ZIP reader/writer ─────────────────────────
 // .docx files are standard ZIP archives. We read/write them
 // without external dependencies using the ZIP format spec.
 
-function readZip(data: Buffer): ZipEntry[] {
+export function readZip(data: Buffer): ZipEntry[] {
   const entries: ZipEntry[] = [];
 
   // Find end-of-central-directory record

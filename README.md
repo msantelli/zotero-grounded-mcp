@@ -363,6 +363,7 @@ zotero-mcp/
 │   ├── index.ts             # MCP server entry point, tool definitions
 │   ├── zotero-client.ts     # Zotero API client (local + web)
 │   ├── citation-stubs.ts    # .docx stub generation + style validation
+│   ├── docx-workflow.ts     # Library-aware .docx orchestration for processing
 │   ├── docx-processor.ts   # Post-processes .docx to inject Zotero field codes
 │   ├── formatter.ts         # Citation formatting (citeproc + fallback)
 │   ├── citation-engine.ts   # citeproc-js wrapper
@@ -373,6 +374,7 @@ zotero-mcp/
 │       ├── chicago-author-date.ts
 │       └── locales-en-US.ts
 ├── tests/                   # Vitest test suite
+├── .github/workflows/       # CI build + test checks
 ├── dist/                    # Compiled output (after npm run build)
 ├── package.json
 ├── tsconfig.json
