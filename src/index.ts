@@ -32,13 +32,14 @@ import {
   formatBibliography,
 } from "./formatter.js";
 import { htmlToMarkdown } from "./html-utils.js";
-import { processDocxStubs, keyToNumericId } from "./docx-processor.js";
+import { processDocxStubs } from "./docx-processor.js";
 import {
   type SupportedBibliographyStyle,
   buildBibliographyStub,
   buildCitationStub,
   isSupportedBibliographyStyle,
 } from "./citation-stubs.js";
+import { createDocxItemPayloadResolver } from "./docx-payload-resolver.js";
 import { serverVersion } from "./server-version.js";
 
 // --- Config from env ---
@@ -557,49 +558,19 @@ Give this tool the file path and it does everything: fetches item data from Zote
   async ({ inputPath, outputPath }) => {
     try {
       const libCtx = await client.getLibraryContext();
+      const defaultLibrarySpec =
+        libCtx.type === "group"
+          ? `group:${libCtx.groupId}`
+          : `user:${libCtx.userId}`;
+      const resolveDocxItemPayload = createDocxItemPayloadResolver({
+        defaultLibrarySpec,
+        getItem: (key: string) => client.getItem(key),
+      });
 
       const result = await processDocxStubs(
         inputPath,
         outputPath ?? inputPath,
-        async (key: string, librarySpec: string) => {
-          // Determine which API base to use
-          const spec = librarySpec || (
-            libCtx.type === "group"
-              ? `group:${libCtx.groupId}`
-              : `user:${libCtx.userId}`
-          );
-
-          const item = await client.getItem(key);
-          const cslJson = item.csljson ?? {};
-
-          // Fix id to numeric
-          const numericId = keyToNumericId(key);
-          const cslWithFixedId = { ...cslJson, id: numericId };
-
-          // Build URI
-          const uriPrefix = spec.startsWith("group:")
-            ? `groups/${spec.slice(6)}`
-            : `users/${spec.slice(5)}`;
-          const uri = `http://zotero.org/${uriPrefix}/items/${key}`;
-
-          // Build display text
-          const authors = (cslJson as Record<string, unknown>).author as
-            | Array<{ family?: string }>
-            | undefined;
-          const issued = (cslJson as Record<string, unknown>).issued as
-            | { "date-parts"?: unknown[][] }
-            | undefined;
-          const year = issued?.["date-parts"]?.[0]?.[0] ?? "n.d.";
-          const authorName = authors?.[0]?.family ?? "Unknown";
-          const displayText = `(${authorName}, ${year})`;
-
-          return {
-            cslJson: JSON.stringify(cslWithFixedId),
-            numericId,
-            uri,
-            displayText,
-          };
-        }
+        resolveDocxItemPayload
       );
 
       const out = outputPath ?? inputPath;
