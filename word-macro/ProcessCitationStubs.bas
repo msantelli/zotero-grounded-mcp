@@ -20,9 +20,6 @@ Private Const ZOTERO_API_USER As String = "http://localhost:23119/api/users/0"
 Private Const ZOTERO_API_GROUP_PREFIX As String = "http://localhost:23119/api/groups/"
 Private Const DEFAULT_STYLE_URL As String = "http://www.zotero.org/styles/apa"
 
-' OOXML namespace
-Private Const W_NS As String = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-
 ' Cached user ID (fetched once per run)
 Private m_userId As String
 Private m_documentStyleUrl As String
@@ -158,33 +155,31 @@ Private Function ProcessCiteStubs() As Long
 End Function
 
 '----------------------------------------------------------------
-' Insert a Zotero field code as OOXML with 5-part structure:
+' Insert a Zotero field code with proper structure:
 ' begin → instrText → separate → display text → end
+'
+' Uses Fields.Add to create the field, then sets the Code.Text
+' to our compact JSON (overwriting Word's reformatted version)
+' and sets Result.Text to the display text.
 '----------------------------------------------------------------
 Private Sub InsertZoteroField(rng As Range, instrText As String, displayText As String)
-    Dim xmlStr As String
+    ' Create the field — Word will auto-create begin/separate/end structure
+    Dim fld As Field
+    Set fld = ActiveDocument.Fields.Add( _
+        Range:=rng, _
+        Type:=wdFieldEmpty, _
+        Text:=instrText, _
+        PreserveFormatting:=False)
 
-    ' XML-escape the instrText (it contains JSON with quotes and ampersands)
-    Dim escapedInstr As String
-    escapedInstr = EscapeXml(instrText)
+    ' Overwrite the field code text with our compact version
+    ' (Fields.Add may have reformatted it with tabs/linebreaks)
+    fld.Code.Text = " " & instrText & " "
 
-    ' XML-escape the display text
-    Dim escapedDisplay As String
-    escapedDisplay = EscapeXml(displayText)
+    ' Set the display text (the visible part the reader sees)
+    fld.result.Text = displayText
 
-    ' Build the complete OOXML for the field code
-    ' This matches the exact structure Zotero produces natively
-    xmlStr = "<?xml version=""1.0"" encoding=""UTF-8"" standalone=""yes""?>" & _
-             "<w:document xmlns:w=""" & W_NS & """>" & _
-             "<w:body><w:p>" & _
-             "<w:r><w:fldChar w:fldCharType=""begin""/></w:r>" & _
-             "<w:r><w:instrText xml:space=""preserve""> " & escapedInstr & " </w:instrText></w:r>" & _
-             "<w:r><w:fldChar w:fldCharType=""separate""/></w:r>" & _
-             "<w:r><w:t>" & escapedDisplay & "</w:t></w:r>" & _
-             "<w:r><w:fldChar w:fldCharType=""end""/></w:r>" & _
-             "</w:p></w:body></w:document>"
-
-    rng.InsertXML xmlStr
+    ' Lock the field so casual updates don't clear the result
+    fld.Locked = True
 End Sub
 
 '----------------------------------------------------------------
@@ -660,18 +655,6 @@ Private Function JsonEscape(s As String) As String
     result = Replace(result, vbLf, "\n")
     result = Replace(result, vbTab, "\t")
     JsonEscape = result
-End Function
-
-'----------------------------------------------------------------
-' Escape string for XML (used inside OOXML instrText)
-'----------------------------------------------------------------
-Private Function EscapeXml(s As String) As String
-    Dim result As String: result = s
-    result = Replace(result, "&", "&amp;")
-    result = Replace(result, "<", "&lt;")
-    result = Replace(result, ">", "&gt;")
-    result = Replace(result, """", "&quot;")
-    EscapeXml = result
 End Function
 
 '----------------------------------------------------------------
