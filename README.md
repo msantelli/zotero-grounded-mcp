@@ -253,16 +253,97 @@ Quit and reopen Claude Desktop. The Zotero tools should now appear in Cowork ses
 | `ZOTERO_API_KEY` | -- | API key from zotero.org/settings/keys (web mode only) |
 | `ZOTERO_LOCAL_PORT` | `23119` | Port for the local Zotero connector |
 
-## Example workflows
+## Writing documents with live Zotero citations
 
-Once connected, you can ask Claude things like:
+This is the main workflow for producing .docx files with Zotero-managed citations. No references are hallucinated -- every citation is validated against your real library.
+
+### How it works
+
+```
+Your .md notes
+    |
+    v
+Claude (with zotero-mcp)
+    |  1. Searches your Zotero library (zotero_search)
+    |  2. Reads abstracts, notes, attachments
+    |  3. Generates validated citation stubs (zotero_cite_stub)
+    |  4. Writes the document with stubs in place of citations
+    v
+.docx file with stubs like {{CITE:4XD6XSLU|lib=user:1234567|p=42}}
+    |
+    v
+Open in Word, run "Process Citation Stubs" macro (Alt+F8)
+    |  The macro calls Zotero's local API for each stub,
+    |  builds field codes, and inserts them as live fields
+    v
+.docx with live Zotero field codes
+    |
+    v
+Click Zotero > Refresh in Word
+    |  Zotero formats all citations per your chosen CSL style,
+    |  generates the bibliography, and takes ownership
+    v
+Finished document -- citations are live, reformattable,
+and included in Zotero's bibliography management
+```
+
+### Step by step
+
+1. **Ask Claude to write your document** using references from your library:
+
+   > "Write a literature review on inferentialism using sources from my Zotero. Use Chicago citations and include a bibliography."
+
+   Claude will search your library, read the relevant items, and produce a document with validated stubs like:
+
+   ```
+   Brandom argues that meaning is constituted by inferential relations
+   {{CITE:4XD6XSLU|lib=user:1234567|p=42}}. This builds on earlier work
+   {{CITE:Z2JEL4W2;6KQWLXUJ|lib=user:1234567}}.
+
+   {{BIBLIOGRAPHY|lib=user:1234567|style=chicago-author-date}}
+   ```
+
+2. **Save as .docx** (Claude or you can do this).
+
+3. **Open the .docx in Word** and run the macro:
+   - Press **Alt+F8**
+   - Select **ProcessCitationStubs**
+   - Click **Run**
+   - The macro replaces each stub with a Zotero field code (takes a few seconds)
+
+4. **Click Zotero > Refresh** in the Word toolbar. Zotero formats everything:
+   - `{{CITE:4XD6XSLU|lib=user:1234567|p=42}}` becomes `(Brandom, 2019, p. 42)`
+   - The bibliography appears at the end with all cited works
+   - You can now change citation styles, add references, etc. through Zotero as usual
+
+### Installing the Word macro
+
+See [`word-macro/README.md`](./word-macro/README.md) for installation instructions. In short:
+
+1. Press **Alt+F11** in Word (opens VBA Editor)
+2. Right-click **Normal** > **Import File...** > select `ProcessCitationStubs.bas`
+3. Optionally self-sign the macro for security (Tools > Digital Signature)
+
+The macro requires Zotero desktop to be running (it calls the local API on port 23119).
+
+### Anti-hallucination guardrail
+
+The `zotero_cite_stub` tool **validates every item key** against your Zotero library before generating stubs. If Claude tries to cite an item that doesn't exist, the tool returns an error:
+
+```
+Error: The following Zotero item keys were not found in the library: FAKEKEY99.
+Use zotero_search to find valid keys.
+```
+
+This means every citation in the final document is guaranteed to reference a real item in your library.
+
+## Other example workflows
 
 - *"Search my Zotero for Brandom's work on inferentialism"* -- uses `zotero_search`
 - *"Get the full citation for item key ABCD1234"* -- uses `zotero_cite`
 - *"Build a bibliography from these 5 items"* -- uses `zotero_bibliography`
 - *"What are my notes on this paper?"* -- uses `zotero_get_notes`
-- *"Generate .docx citation stubs for these Zotero keys and include a Chicago bibliography"* -- uses `zotero_cite_stub`
-- *"Write a literature review paragraph about pragmatism using sources from my library"* -- Claude searches, reads abstracts, and cites accurately
+- *"What PDFs do I have for this item?"* -- uses `zotero_get_attachments`
 
 ## Privacy and security
 
