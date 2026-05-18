@@ -387,6 +387,33 @@ export class ZoteroClient {
   }
 
   /**
+   * Resolve an attachment's local absolute filesystem path by asking Zotero.
+   *
+   * Only works in local mode (the desktop app exposes /items/<key>/file as a
+   * 302 redirect to a file:// URL that Zotero has already resolved against
+   * the user's baseAttachmentPath, Zotero storage directory, etc.).
+   *
+   * Returns null in web mode, on non-file attachments, or when the request fails.
+   */
+  async getAttachmentLocalPath(attachmentKey: string): Promise<string | null> {
+    if (this.config.mode !== "local") return null;
+    const url = `${this.baseUrl}/items/${attachmentKey}/file`;
+    try {
+      const response = await fetch(url, {
+        headers: this.headers,
+        redirect: "manual",
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (response.status !== 302) return null;
+      const location = response.headers.get("location");
+      if (!location || !location.startsWith("file://")) return null;
+      return decodeURIComponent(location.slice("file://".length));
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Get multiple items in a single API call using the itemKey parameter.
    * Falls back to individual requests if the batch endpoint fails.
    */

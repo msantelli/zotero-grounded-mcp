@@ -390,6 +390,13 @@ server.tool(
         if (d.contentType) parts.push(`Type: ${d.contentType}`);
         if (d.linkMode) parts.push(`Link mode: ${d.linkMode}`);
         if (d.path) parts.push(`Path: ${d.path}`);
+        // Resolve an absolute filesystem path via Zotero's local API so
+        // downstream consumers don't need to know about baseAttachmentPath
+        // or which OS/install Zotero is running on. Skipped in web mode.
+        if (d.linkMode === "linked_file" || d.linkMode === "imported_file" || d.linkMode === "imported_url") {
+          const localPath = await client.getAttachmentLocalPath(d.key);
+          if (localPath) parts.push(`Local path: ${localPath}`);
+        }
         if (d.url) parts.push(`URL: ${d.url}`);
         parts.push(`Key: \`${d.key}\``);
         lines.push(parts.join("\n"));
